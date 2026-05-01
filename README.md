@@ -118,6 +118,8 @@ This is deliberately simple. The trust model assumes the agent is a privileged m
 
 ## Installation
 
+For a full server setup, see [Deployment Guide](docs/deployment.md).
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
