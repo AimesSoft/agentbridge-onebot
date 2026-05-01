@@ -148,7 +148,7 @@ def build_registry(admin_prefix: str, public_prefix: str = "/") -> CommandRegist
         lines = ["可用命令：", *registry.help_lines(ctx.is_admin)]
         return CommandResult("\n".join(lines))
 
-    @registry.register("ping", aliases=("测试", "在线"), help_text="检查 bridge 是否在线")
+    @registry.register("ping", aliases=("测试", "在线"), help_text="检查 AgentBridge 是否在线")
     async def ping_cmd(_: CommandContext, __: list[str]) -> CommandResult:
         return CommandResult("pong")
 
@@ -272,7 +272,7 @@ def build_registry(admin_prefix: str, public_prefix: str = "/") -> CommandRegist
 
     @registry.register("health", aliases=("健康", "检查"), requires_admin=True, help_text="检查 Hermes/NapCat")
     async def health_cmd(ctx: CommandContext, _: list[str]) -> CommandResult:
-        parts = ["bridge: ok"]
+        parts = ["AgentBridge: ok"]
         try:
             hermes = await ctx.hermes.health()
             parts.append(f"hermes: {hermes.get('status', 'ok')}")

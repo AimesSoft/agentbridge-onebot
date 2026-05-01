@@ -1,8 +1,9 @@
 bot:
   qq_id: ""
   names:
-    - bridge
-    - agent
+    - 梨花
+    - AgentBridge
+    - bot
   admins:
     - ""
 
@@ -10,15 +11,15 @@ github:
   default_repo: default
   repos:
     default:
-      owner: your-org
-      repo: your-repo
+      owner: AimesSoft
+      repo: NipaPlay-Reload
       default_ref: main
       workflows:
         release: release.yml
         deploy: deploy.yml
         ci: ci.yml
     docs:
-      owner: your-org
+      owner: AimesSoft
       repo: docs-repo
       default_ref: main
       workflows:
@@ -29,7 +30,9 @@ groups:
     autonomous_enabled: true
     min_seconds_between_replies: 900
     keywords:
-      - Hermes
+      - NipaPlay
+      - 梨花
       - release
-      - build
-      - deploy
+      - workflow
+      - 构建
+      - 发版

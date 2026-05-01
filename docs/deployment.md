@@ -1,18 +1,19 @@
-# Deployment Guide
+# 部署指南
 
-This guide describes a single-host deployment where NapCat, AgentBridge, and the agent runtime run on the same server.
+这份指南面向 NipaPlay 社区的单机部署：NapCat、AgentBridge 和 Hermes Agent 都运行在同一台服务器上。Docker 和 systemd 二选一即可。
 
-## 1. Prepare Runtime
+## 1. 前置条件
 
-Requirements:
+需要准备：
 
 - Python 3.11+
 - Git
-- A running NapCat OneBot HTTP API
-- A running OpenAI-compatible agent server
-- Optional: GitHub token for release/deploy commands
+- NapCat，且 OneBot HTTP API 可用
+- Hermes Agent server，提供 OpenAI-compatible `/v1/chat/completions`
+- 可选：GitHub fine-grained PAT，用于 release/deploy workflow dispatch
+- 可选：NipaPlay-Reload 仓库和知识库目录，挂载给 Hermes 读取
 
-Clone and install:
+## 2. 拉取代码
 
 ```bash
 git clone https://github.com/AimesSoft/agentbridge-onebot.git
@@ -24,31 +25,33 @@ cp .env.example .env
 cp config.example.yaml config.yaml
 ```
 
-## 2. Configure `.env`
+## 3. 配置 `.env`
 
-Minimum useful configuration:
+最小可用配置示例：
 
 ```text
 QQBRIDGE_HOST=127.0.0.1
 QQBRIDGE_PORT=8787
 QQBRIDGE_WEBHOOK_PATH=/onebot
-QQBRIDGE_WEBHOOK_TOKEN=<random-webhook-token>
-QQBRIDGE_SKILL_TOKEN=<random-skill-token>
+QQBRIDGE_WEBHOOK_TOKEN=<随机 webhook token，可选>
+QQBRIDGE_SKILL_TOKEN=<随机 skill token，必须和 Hermes skill 一致>
 
 NAPCAT_BASE_URL=http://127.0.0.1:3000
 HERMES_BASE_URL=http://127.0.0.1:8642
 HERMES_MODEL=hermes-agent
 
-BOT_QQ_ID=<bot-account-id>
-BOT_NAMES=bridge,agent,bot
-ADMIN_QQ_IDS=<your-platform-user-id>
+BOT_QQ_ID=<机器人 QQ 号>
+BOT_NAMES=梨花,AgentBridge,bot
+ADMIN_QQ_IDS=<管理员 QQ 号，逗号分隔>
 
-GITHUB_TOKEN=<optional-github-token>
-GITHUB_OWNER=<owner>
-GITHUB_REPO=<repo>
+GITHUB_TOKEN=<可选 GitHub token>
+GITHUB_OWNER=AimesSoft
+GITHUB_REPO=NipaPlay-Reload
+GITHUB_RELEASE_WORKFLOW=release.yml
+GITHUB_DEPLOY_WORKFLOW=deploy.yml
 ```
 
-Generate tokens locally:
+生成随机 token：
 
 ```bash
 python - <<'PY'
@@ -58,27 +61,28 @@ print("QQBRIDGE_SKILL_TOKEN=" + secrets.token_urlsafe(32))
 PY
 ```
 
-For public internet exposure, put AgentBridge behind a reverse proxy with HTTPS. For same-host deployments, keep it bound to `127.0.0.1` and let NapCat call it locally.
+如果 NapCat 和 AgentBridge 在同机运行，建议 `QQBRIDGE_HOST=127.0.0.1`。如果要暴露到公网，请放在 HTTPS 反向代理后面。
 
-## 3. Configure `config.yaml`
+## 4. 配置 `config.yaml`
 
-Example:
+示例：
 
 ```yaml
 bot:
-  qq_id: "<bot-account-id>"
+  qq_id: "<机器人 QQ 号>"
   names:
-    - bridge
-    - agent
+    - 梨花
+    - AgentBridge
+    - bot
   admins:
-    - "<your-platform-user-id>"
+    - "<管理员 QQ 号>"
 
 github:
   default_repo: default
   repos:
     default:
-      owner: "<owner>"
-      repo: "<repo>"
+      owner: AimesSoft
+      repo: NipaPlay-Reload
       default_ref: main
       workflows:
         release: release.yml
@@ -86,85 +90,88 @@ github:
         ci: ci.yml
 
 groups:
-  "<group-id>":
+  "<QQ群号>":
     autonomous_enabled: true
     min_seconds_between_replies: 900
     keywords:
+      - NipaPlay
+      - 梨花
       - release
       - workflow
-      - build
+      - 构建
+      - 发版
 ```
 
-`autonomous_enabled` controls ambient group participation. Mentions, replies, and private messages still work independently.
+`autonomous_enabled` 只控制 ambient 自主看群。私聊、@bot、回复 bot 不受这个开关影响。
 
-## 4. Configure NapCat
+## 5. 配置 NapCat
 
-NapCat HTTP API should be reachable at:
+NapCat HTTP API 默认应在：
 
 ```text
 http://127.0.0.1:3000
 ```
 
-Configure NapCat HTTP client webhook:
+NapCat HTTP Client 上报地址配置为：
 
 ```text
 POST http://127.0.0.1:8787/onebot
 ```
 
-If `QQBRIDGE_WEBHOOK_TOKEN` is set, add this header in the NapCat HTTP client configuration if supported:
+如果设置了 `QQBRIDGE_WEBHOOK_TOKEN`，并且 NapCat 支持自定义 header，请加：
 
 ```text
 X-QQBridge-Token: <QQBRIDGE_WEBHOOK_TOKEN>
 ```
 
-If your NapCat setup cannot send custom headers, either keep AgentBridge on localhost/private network or leave `QQBRIDGE_WEBHOOK_TOKEN` empty.
+如果 NapCat 不方便加 header，就保持 AgentBridge 只监听 localhost 或内网，并把 `QQBRIDGE_WEBHOOK_TOKEN` 留空。
 
-## 5. Install Agent Skill
+## 6. 安装 Hermes Skill
 
-Install the bundled skill into the agent runtime:
+把 skill 放到 Hermes skills 目录：
 
 ```bash
 mkdir -p ~/.hermes/skills/community
 cp -R hermes_skill ~/.hermes/skills/community/agentbridge
 ```
 
-Set these environment variables in the agent runtime service:
+Hermes 运行环境需要：
 
 ```text
 QQBRIDGE_SKILL_BASE_URL=http://127.0.0.1:8787
-QQBRIDGE_SKILL_TOKEN=<same value as AgentBridge QQBRIDGE_SKILL_TOKEN>
+QQBRIDGE_SKILL_TOKEN=<与 AgentBridge .env 中一致>
 ```
 
-Restart the agent runtime after installing the skill.
+安装后重启 Hermes。下一次 session 中 Hermes 应能看到 `agentbridge` skill。
 
-## 6. Run Manually
+## 7. 手动运行
 
 ```bash
 source .venv/bin/activate
 agentbridge
 ```
 
-Health check:
+健康检查：
 
 ```bash
 curl http://127.0.0.1:8787/health
 ```
 
-Expected:
+期望返回：
 
 ```json
 {"status":"ok","service":"agentbridge"}
 ```
 
-## 7. Run With systemd
+## 8. systemd 运行
 
-Create a dedicated user if desired:
+创建系统用户：
 
 ```bash
 sudo useradd --system --home /opt/agentbridge --shell /usr/sbin/nologin agentbridge
 ```
 
-Install the project under `/opt/agentbridge`, then adapt the service file:
+把项目放到 `/opt/agentbridge`，配置好 `.env`、`config.yaml` 后：
 
 ```bash
 sudo cp deploy/qqbridge.service.example /etc/systemd/system/agentbridge.service
@@ -172,76 +179,139 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now agentbridge
 ```
 
-Check logs:
+查看日志：
 
 ```bash
 sudo journalctl -u agentbridge -f
 ```
 
-## 8. Smoke Tests
+## 9. Docker Compose 运行
 
-Public command in chat:
+仓库包含 `Dockerfile` 和 `docker-compose.yml`。当前 Docker 方案会同时启动 Hermes gateway 和 AgentBridge。
+
+准备：
+
+```bash
+cp .env.example .env
+cp config.example.yaml config.yaml
+mkdir -p data hermes-runtime/sessions hermes-runtime/logs hermes-runtime/cache hermes-runtime/runtime repos knowledge
+```
+
+需要额外准备并按 `docker-compose.yml` 挂载：
+
+```text
+hermes-config.yaml
+hermes-env
+repos/NipaPlay-Reload
+knowledge/
+```
+
+启动：
+
+```bash
+docker compose up -d --build
+```
+
+查看日志：
+
+```bash
+docker compose logs -f agentbridge
+```
+
+如果你的 Hermes 已经在宿主机独立部署，可以不用 Docker，改用 systemd 方式。
+
+## 10. 烟雾测试
+
+公开命令：
 
 ```text
 /ping
+/status
+/pr
 ```
 
-Admin health command:
+管理员命令：
 
 ```text
 。health
-```
-
-GitHub status:
-
-```text
-/status
-```
-
-Ambient mode:
-
-```text
+。group show
 。group on
 。group cooldown 900
 ```
 
-Then let normal group messages accumulate. The scheduler checks randomly with long-term mean `AMBIENT_INTERVAL_SECONDS`.
-
-## 9. Data and Backups
-
-Back up:
+触发 release：
 
 ```text
+。release main tag=v1.2.3
+```
+
+这要求 GitHub token 有目标仓库 Actions 写权限，且 workflow 支持 `workflow_dispatch`。
+
+## 11. 数据备份
+
+需要备份：
+
+```text
+.env
+config.yaml
 data/state.json
 data/messages.sqlite3
 data/message_archive/
-config.yaml
-.env
+hermes-runtime/
 ```
 
-Do not publish `.env` or `data/`.
+不要发布：
 
-## 10. Troubleshooting
+```text
+.env
+config.yaml
+data/
+hermes-env
+hermes-config.yaml
+repos/
+knowledge/
+```
 
-Bridge health is ok but no chat response:
+## 12. 常见问题
 
-- Check NapCat webhook URL.
-- Check the bot account ID in `BOT_QQ_ID`.
-- Check mention parsing and bot names.
-- Check AgentBridge logs.
+### AgentBridge health 正常，但 QQ 不回复
 
-Skill call fails with 401:
+检查：
 
-- `QQBRIDGE_SKILL_TOKEN` differs between AgentBridge and the agent runtime.
+- NapCat webhook 地址是否正确。
+- `BOT_QQ_ID` 是否是机器人 QQ 号。
+- NapCat 上报 message 里是否包含 `self_id`。
+- 群里是否真的 @ 到机器人，或配置了正确的 `BOT_NAMES`。
+- Hermes `/health` 是否正常。
+- AgentBridge 日志是否有 Hermes 请求报错。
 
-Skill call fails with 403:
+### Skill 调用 401
 
-- The `run_id` expired.
-- The agent tried to call a tool outside the current group/repo.
-- `SKILL_ONEBOT_LEVEL` is too restrictive for that OneBot action.
+`QQBRIDGE_SKILL_TOKEN` 在 AgentBridge 和 Hermes 运行环境中不一致。
 
-GitHub release/deploy fails:
+### Skill 调用 403
 
-- `GITHUB_TOKEN` is missing or lacks Actions write permission.
-- The workflow does not support `workflow_dispatch`.
-- The workflow alias in `config.yaml` does not match the command.
+可能原因：
+
+- `run_id` 过期。
+- Agent 调用了当前 run 不允许的工具。
+- Agent 试图操作别的群或别的 repo。
+- `SKILL_ONEBOT_LEVEL` 不允许该 OneBot action。
+
+### release/deploy 失败
+
+检查：
+
+- `GITHUB_TOKEN` 是否配置。
+- token 是否有 Actions write 权限。
+- workflow 是否支持 `workflow_dispatch`。
+- `config.yaml` 中 workflow alias 是否正确。
+
+### ambient 不发言
+
+这是正常行为。ambient 的原则是“随机看手机，可回可不回”。检查：
+
+- 群是否 `。group on`。
+- 是否有未读消息进入 buffer。
+- cooldown 是否过长。
+- Hermes 是否返回了 skip。
