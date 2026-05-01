@@ -1,0 +1,317 @@
+from __future__ import annotations
+
+from typing import Any
+
+from .agent_output import AgentPlan, OutboundAction, parse_agent_plan
+from .capabilities import GROUP_AMBIENT_TOOLS, GROUP_IMMEDIATE_TOOLS, PRIVATE_TOOLS
+from .clients import GitHubClient, HermesClient, NapCatClient
+from .commands import CommandContext, CommandRegistry
+from .message_store import MessageStore
+from .models import InboundMessage, keyword_hit, mentions_bot, parse_inbound_message, reply_ids
+from .prompts import AMBIENT_GROUP_PROMPT, GROUP_KEYWORD_PROMPT, GROUP_MENTION_PROMPT, PRIVATE_PROMPT, with_persona
+from .settings import BridgeConfig, Settings
+from .state import BridgeState
+from .text import is_skip_response, split_qq_message
+
+
+class BridgeService:
+    def __init__(
+        self,
+        *,
+        settings: Settings,
+        config: BridgeConfig,
+        state: BridgeState,
+        store: MessageStore,
+        hermes: HermesClient,
+        napcat: NapCatClient,
+        github: GitHubClient,
+        commands: CommandRegistry,
+    ) -> None:
+        self.settings = settings
+        self.config = config
+        self.state = state
+        self.store = store
+        self.hermes = hermes
+        self.napcat = napcat
+        self.github = github
+        self.commands = commands
+
+    async def handle_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        inbound = parse_inbound_message(event)
+        if inbound is None:
+            return {"ok": True, "action": "ignored", "reason": "not_message"}
+        if inbound.user_id == inbound.self_id:
+            return {"ok": True, "action": "ignored", "reason": "self_message"}
+        if self.state.seen_event(inbound.dedup_key):
+            return {"ok": True, "action": "ignored", "reason": "duplicate"}
+
+        if inbound.group_id:
+            self.state.append_group_message(
+                inbound.group_id,
+                inbound.sender_name,
+                inbound.user_id,
+                inbound.plain_text,
+                inbound.message_id,
+            )
+        self._persist_inbound(inbound)
+
+        if self.commands.is_command_text(inbound.plain_text):
+            return await self._handle_command(inbound)
+
+        route = self._route_llm(inbound)
+        if route is None:
+            return {"ok": True, "action": "ignored", "reason": "no_route"}
+        prompt, allow_skip, reason = route
+        if not self.state.allow_user_llm(inbound.user_id, self.settings.user_rate_limit_per_minute):
+            return {"ok": True, "action": "ignored", "reason": "rate_limited"}
+
+        run = self._create_run_for_inbound(inbound, reason)
+        user_content = self._with_run_context(self._build_user_content(inbound), run)
+        history = self.state.history(inbound.conversation_key)
+        answer = await self.hermes.chat(prompt, history, user_content)
+        if allow_skip and is_skip_response(answer):
+            return {"ok": True, "action": "skipped", "reason": reason}
+
+        await self._send_text(inbound, answer, reply=inbound.is_group and reason in {"mention", "reply_to_bot"})
+        self.state.append_conversation(inbound.conversation_key, user_content, answer)
+        if inbound.group_id:
+            self.state.mark_group_replied(inbound.group_id)
+        return {"ok": True, "action": "llm_reply", "reason": reason}
+
+    async def _handle_command(self, inbound: InboundMessage) -> dict[str, Any]:
+        is_admin = inbound.user_id in self.config.admin_qq_ids
+        base_group_config = self.config.group_config(inbound.group_id)
+        effective_group_config = (
+            self.state.effective_group_config(inbound.group_id, base_group_config) if inbound.group_id else None
+        )
+        ctx = CommandContext(
+            user_id=inbound.user_id,
+            group_id=inbound.group_id,
+            is_admin=is_admin,
+            conversation_key=inbound.conversation_key,
+            config=self.config,
+            group_config=effective_group_config,
+            state=self.state,
+            github=self.github,
+            hermes=self.hermes,
+            napcat=self.napcat,
+        )
+        result = await self.commands.dispatch(inbound.plain_text, ctx)
+        if result is None:
+            return {"ok": True, "action": "ignored", "reason": "unknown_or_unauthorized_command"}
+        if result.private and inbound.is_group:
+            await self._send_private(inbound.user_id, result.text)
+        else:
+            await self._send_text(inbound, result.text, reply=False)
+        return {"ok": True, "action": "command"}
+
+    def _route_llm(self, inbound: InboundMessage) -> tuple[str, bool, str] | None:
+        if inbound.is_private:
+            return with_persona(PRIVATE_PROMPT, self.settings.bot_persona), False, "private"
+        if not inbound.group_id:
+            return None
+
+        base = self.config.group_config(inbound.group_id)
+        group_config = self.state.effective_group_config(inbound.group_id, base)
+        if mentions_bot(inbound, self.config.bot_qq_id, self.config.bot_names):
+            return with_persona(GROUP_MENTION_PROMPT, self.settings.bot_persona), False, "mention"
+
+        if any(self.state.is_reply_to_bot(inbound.group_id, reply_id) for reply_id in reply_ids(inbound.segments)):
+            return with_persona(GROUP_MENTION_PROMPT, self.settings.bot_persona), False, "reply_to_bot"
+
+        hit = keyword_hit(inbound.plain_text, group_config.keywords)
+        if hit:
+            return with_persona(GROUP_KEYWORD_PROMPT, self.settings.bot_persona), True, f"keyword:{hit}"
+
+        return None
+
+    def _persist_inbound(self, inbound: InboundMessage) -> None:
+        self.store.add_message(
+            message_id=inbound.message_id,
+            message_type=inbound.message_type,
+            group_id=inbound.group_id,
+            user_id=inbound.user_id,
+            self_id=inbound.self_id,
+            sender_name=inbound.sender_name,
+            plain_text=inbound.plain_text,
+            raw_message=inbound.raw_message,
+            segments=[{"type": segment.type, "data": segment.data} for segment in inbound.segments],
+            reply_to=reply_ids(inbound.segments)[0] if reply_ids(inbound.segments) else None,
+            at_bot=mentions_bot(inbound, self.config.bot_qq_id, self.config.bot_names),
+            is_from_bot=inbound.user_id == inbound.self_id,
+            event=inbound.event,
+            timestamp=int(inbound.event.get("time") or 0) or None,
+        )
+
+    async def tick_ambient(self) -> dict[str, Any]:
+        if not self.settings.ambient_enabled:
+            return {"ok": True, "action": "ambient_disabled"}
+        groups = self.state.ambient_groups_with_unread(self.settings.ambient_min_unread_messages)
+        results = []
+        for group_id in groups:
+            base = self.config.group_config(group_id)
+            group_config = self.state.effective_group_config(group_id, base)
+            if not group_config.autonomous_enabled:
+                continue
+            if not self.state.can_group_autoreply_now(group_id, group_config.min_seconds_between_replies):
+                continue
+            result = await self._run_ambient_group(group_id)
+            results.append({"group_id": group_id, **result})
+        return {"ok": True, "action": "ambient_tick", "groups": results}
+
+    async def _run_ambient_group(self, group_id: str) -> dict[str, Any]:
+        unread = self.state.unread_group_messages(group_id, self.settings.ambient_max_unread_messages)
+        if not unread:
+            return {"action": "skipped", "reason": "no_unread"}
+        run = self.state.create_agent_run(
+            mode="ambient",
+            group_id=group_id,
+            allowed_tools=GROUP_AMBIENT_TOOLS,
+            allowed_repos=list(self.config.repos),
+            ttl_seconds=self.settings.agent_run_ttl_seconds,
+            max_tool_calls=20,
+        )
+        user_content = self._with_run_context(self._build_ambient_content(group_id, unread), run)
+        answer = await self.hermes.chat(with_persona(AMBIENT_GROUP_PROMPT, self.settings.bot_persona), [], user_content)
+        plan = parse_agent_plan(answer)
+        if plan.should_skip:
+            self.state.clear_unread_group_messages(group_id)
+            return {"action": "skipped", "reason": "agent_skip"}
+
+        await self._send_plan_to_group(group_id, plan)
+        self.state.mark_group_replied(group_id)
+        self.state.clear_unread_group_messages(group_id)
+        return {"action": "replied", "actions": len(plan.actions)}
+
+    def _create_run_for_inbound(self, inbound: InboundMessage, reason: str) -> dict[str, Any]:
+        if inbound.is_private:
+            allowed_tools = PRIVATE_TOOLS
+            mode = "private"
+        else:
+            allowed_tools = GROUP_IMMEDIATE_TOOLS
+            mode = "immediate"
+        return self.state.create_agent_run(
+            mode=mode,
+            group_id=inbound.group_id,
+            user_id=inbound.user_id,
+            trigger_message_id=inbound.message_id,
+            allowed_tools=allowed_tools,
+            allowed_repos=list(self.config.repos),
+            ttl_seconds=self.settings.agent_run_ttl_seconds,
+            max_tool_calls=20,
+        )
+
+    def _with_run_context(self, content: str, run: dict[str, Any]) -> str:
+        tools = ", ".join(run.get("allowed_tools", []))
+        return (
+            f"AgentBridge agent_run_id: {run['run_id']}\n"
+            f"run_mode: {run.get('mode')}\n"
+            f"allowed_tools: {tools}\n"
+            f"expires_at_unix: {run.get('expires_at')}\n"
+            f"调用 AgentBridge skill 时必须传 run_id={run['run_id']}。\n\n"
+            f"{content}"
+        )
+
+    def _build_user_content(self, inbound: InboundMessage) -> str:
+        if inbound.is_private:
+            return inbound.plain_text
+        assert inbound.group_id is not None
+        recent = self.state.recent_group_context(inbound.group_id, self.settings.max_group_context_messages)
+        stored_recent = self.store.recent_group_messages(inbound.group_id, self.settings.max_group_context_messages)
+        if stored_recent:
+            recent = stored_recent
+        context_lines = [
+            f"- {item.get('sender_name') or item.get('sender') or item.get('user_id', '?')}: {item.get('plain_text') or item.get('text', '')}"
+            for item in recent
+            if item.get("plain_text") or item.get("text")
+        ]
+        context = "\n".join(context_lines)
+        archive = self.store.archive_paths(group_id=inbound.group_id)
+        archive_paths = "\n".join(f"- {path}" for path in archive.get("paths", [])[-7:])
+        return (
+            f"QQ群号：{inbound.group_id}\n"
+            f"当前发言人：{inbound.sender_name}({inbound.user_id})\n"
+            f"群聊消息归档 JSONL 路径：\n{archive_paths or '- 暂无归档文件'}\n\n"
+            f"最近群聊：\n{context}\n\n"
+            f"当前消息：{inbound.plain_text}"
+        )
+
+    def _build_ambient_content(self, group_id: str, unread: list[dict[str, Any]]) -> str:
+        lines = []
+        for index, item in enumerate(unread, start=1):
+            sender = item.get("sender", item.get("user_id", "?"))
+            user_id = item.get("user_id", "?")
+            text = item.get("text", "")
+            ts = item.get("ts", "")
+            message_id = item.get("message_id") or f"ambient:{index}"
+            lines.append(f"{index}. message_id={message_id} ts={ts} sender={sender}({user_id}): {text}")
+        archive = self.store.archive_paths(group_id=group_id)
+        archive_paths = "\n".join(f"- {path}" for path in archive.get("paths", [])[-7:]) or "- 暂无归档文件"
+        return (
+            f"QQ群号：{group_id}\n"
+            f"群聊消息归档 JSONL 路径：\n{archive_paths}\n\n"
+            f"以下是你这次查看手机时看到的未读群聊消息。请判断是否需要参与。\n"
+            f"未读消息：\n" + "\n".join(lines)
+        )
+
+    async def _send_plan_to_group(self, group_id: str, plan: AgentPlan) -> None:
+        for action in plan.actions:
+            if action.private:
+                continue
+            await self._send_group_action(group_id, action)
+
+    async def _send_group_action(self, group_id: str, action: OutboundAction) -> None:
+        if action.type == "face" and action.face_id:
+            data = await self.napcat.send_msg(
+                message_type="group",
+                group_id=group_id,
+                message=[{"type": "face", "data": {"id": action.face_id}}],
+            )
+            message_id = _response_message_id(data)
+            if message_id:
+                self.state.add_bot_message_id(group_id, message_id)
+            return
+
+        for index, chunk in enumerate(split_qq_message(action.text, self.settings.max_message_chars)):
+            message: str | list[dict[str, Any]]
+            if action.reply_to and index == 0 and not action.reply_to.startswith("ambient:"):
+                message = [
+                    {"type": "reply", "data": {"id": action.reply_to}},
+                    {"type": "text", "data": {"text": chunk}},
+                ]
+            else:
+                message = chunk
+            data = await self.napcat.send_msg(message_type="group", group_id=group_id, message=message)
+            message_id = _response_message_id(data)
+            if message_id:
+                self.state.add_bot_message_id(group_id, message_id)
+
+    async def _send_text(self, inbound: InboundMessage, text: str, *, reply: bool) -> None:
+        chunks = split_qq_message(text, self.settings.max_message_chars)
+        for index, chunk in enumerate(chunks):
+            if inbound.is_group and inbound.group_id:
+                message: str | list[dict[str, Any]]
+                if reply and index == 0:
+                    message = [
+                        {"type": "reply", "data": {"id": inbound.message_id}},
+                        {"type": "text", "data": {"text": chunk}},
+                    ]
+                else:
+                    message = chunk
+                data = await self.napcat.send_msg(message_type="group", group_id=inbound.group_id, message=message)
+                message_id = _response_message_id(data)
+                if message_id:
+                    self.state.add_bot_message_id(inbound.group_id, message_id)
+            else:
+                await self._send_private(inbound.user_id, chunk)
+
+    async def _send_private(self, user_id: str, text: str) -> None:
+        chunks = split_qq_message(text, self.settings.max_message_chars)
+        for chunk in chunks:
+            await self.napcat.send_msg(message_type="private", user_id=user_id, message=chunk)
+
+
+def _response_message_id(data: dict[str, Any]) -> str | None:
+    payload = data.get("data") if isinstance(data.get("data"), dict) else data
+    message_id = payload.get("message_id") if isinstance(payload, dict) else None
+    return str(message_id) if message_id is not None else None

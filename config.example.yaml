@@ -1,0 +1,35 @@
+bot:
+  qq_id: ""
+  names:
+    - bridge
+    - agent
+  admins:
+    - ""
+
+github:
+  default_repo: default
+  repos:
+    default:
+      owner: your-org
+      repo: your-repo
+      default_ref: main
+      workflows:
+        release: release.yml
+        deploy: deploy.yml
+        ci: ci.yml
+    docs:
+      owner: your-org
+      repo: docs-repo
+      default_ref: main
+      workflows:
+        release: release.yml
+
+groups:
+  "example-group-id":
+    autonomous_enabled: true
+    min_seconds_between_replies: 900
+    keywords:
+      - Hermes
+      - release
+      - build
+      - deploy

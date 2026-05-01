@@ -1,0 +1,16 @@
+[Unit]
+Description=AgentBridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/agentbridge
+EnvironmentFile=/opt/agentbridge/.env
+ExecStart=/opt/agentbridge/.venv/bin/agentbridge
+Restart=always
+RestartSec=3
+User=qqbridge
+
+[Install]
+WantedBy=multi-user.target
