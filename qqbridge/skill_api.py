@@ -24,6 +24,12 @@ class SendMessageRequest(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
 
 
+class SendPrivateMessageRequest(BaseModel):
+    run_id: str
+    user_id: str
+    text: str = Field(min_length=1, max_length=4000)
+
+
 class ReplyMessageRequest(BaseModel):
     run_id: str
     message_id: str
@@ -119,6 +125,13 @@ def build_skill_router(
         if message_id:
             state.add_bot_message_id(payload.group_id, message_id)
         return {"ok": True, "message_id": message_id}
+
+    @router.post("/qq/send_private_message")
+    async def qq_send_private_message(payload: SendPrivateMessageRequest, request: Request) -> dict[str, Any]:
+        _verify_skill_token(request, settings)
+        _authorize(state, run_id=payload.run_id, tool=cap.QQ_SEND_PRIVATE_MESSAGE)
+        data = await napcat.send_msg(message_type="private", user_id=payload.user_id, message=payload.text)
+        return {"ok": True, "data": data.get("data", data)}
 
     @router.post("/qq/reply_message")
     async def qq_reply_message(payload: ReplyMessageRequest, request: Request) -> dict[str, Any]:

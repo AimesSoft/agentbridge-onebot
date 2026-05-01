@@ -26,6 +26,9 @@ dev = [
 qqbridge = "qqbridge.__main__:main"
 agentbridge = "qqbridge.__main__:main"
 
+[tool.setuptools.packages.find]
+include = ["qqbridge*"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

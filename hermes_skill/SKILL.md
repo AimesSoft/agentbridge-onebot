@@ -105,6 +105,9 @@ set_group_special_title
 POST /skills/qq/send_message
 {"run_id": "<run_id>", "group_id": "123", "text": "message"}
 
+POST /skills/qq/send_private_message
+{"run_id": "<run_id>", "user_id": "456", "text": "private message"}
+
 POST /skills/qq/reply_message
 {"run_id": "<run_id>", "message_id": "456", "text": "reply"}
 
@@ -155,6 +158,7 @@ POST /skills/github/get_workflow_status
 ```bash
 python ${HERMES_SKILL_DIR}/scripts/qqbridge.py reply-message --run-id <run_id> --message-id 456 --text "我看一下这个 CI。"
 python ${HERMES_SKILL_DIR}/scripts/qqbridge.py send-message --run-id <run_id> --group-id 123 --text "release 状态我查到了。"
+python ${HERMES_SKILL_DIR}/scripts/qqbridge.py send-private-message --run-id <run_id> --user-id 456 --text "这是私聊回复。"
 python ${HERMES_SKILL_DIR}/scripts/qqbridge.py send-face --run-id <run_id> --group-id 123 --face-id 14
 python ${HERMES_SKILL_DIR}/scripts/qqbridge.py member-info --run-id <run_id> --group-id 123 --user-id 456
 python ${HERMES_SKILL_DIR}/scripts/qqbridge.py set-group-ban --run-id <run_id> --group-id 123 --user-id 456 --duration 60

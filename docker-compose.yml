@@ -1,0 +1,21 @@
+services:
+  agentbridge:
+    build: .
+    container_name: agentbridge
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8787:8787"
+    env_file: .env
+    environment:
+      HERMES_HOME: /root/.hermes
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
+      - ./hermes-config.yaml:/root/.hermes/config.yaml:ro
+      - ./hermes-env:/root/.hermes/.env:ro
+      - ./hermes-runtime/sessions:/root/.hermes/sessions
+      - ./hermes-runtime/logs:/root/.hermes/logs
+      - ./hermes-runtime/cache:/root/.hermes/cache
+      - ./hermes-runtime/runtime:/root/.hermes/runtime
+      - ./repos/NipaPlay-Reload:/workspace/NipaPlay-Reload
+      - ./knowledge:/workspace/knowledge:ro

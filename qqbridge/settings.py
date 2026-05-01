@@ -37,6 +37,7 @@ class Settings(BaseSettings):
 
     hermes_base_url: str = "http://127.0.0.1:8642"
     hermes_model: str = "hermes-agent"
+    hermes_api_key: str | None = None
     hermes_timeout_seconds: float = 120
 
     bot_qq_id: str | None = None
@@ -96,6 +97,7 @@ class Settings(BaseSettings):
         "qqbridge_webhook_token",
         "qqbridge_skill_token",
         "napcat_access_token",
+        "hermes_api_key",
         "github_token",
         mode="before",
     )

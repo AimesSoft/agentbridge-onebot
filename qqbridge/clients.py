@@ -11,6 +11,7 @@ class HermesClient:
     def __init__(self, settings: Settings) -> None:
         self.base_url = settings.hermes_base_url.rstrip("/")
         self.model = settings.hermes_model
+        self.api_key = settings.hermes_api_key
         self.timeout = settings.hermes_timeout_seconds
 
     async def health(self) -> dict[str, Any]:
@@ -19,7 +20,19 @@ class HermesClient:
             response.raise_for_status()
             return response.json()
 
-    async def chat(self, system_prompt: str, history: list[dict[str, str]], user_content: str) -> str:
+    async def chat(
+        self,
+        system_prompt: str,
+        history: list[dict[str, str]],
+        user_content: str,
+        *,
+        session_id: str | None = None,
+    ) -> str:
+        headers = {}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        if session_id:
+            headers["X-Hermes-Session-Id"] = session_id
         payload = {
             "model": self.model,
             "messages": [
@@ -29,7 +42,7 @@ class HermesClient:
             ],
             "stream": False,
         }
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, headers=headers) as client:
             response = await client.post(f"{self.base_url}/v1/chat/completions", json=payload)
             response.raise_for_status()
             data = response.json()

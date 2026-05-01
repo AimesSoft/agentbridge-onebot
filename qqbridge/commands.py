@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import shlex
 from typing import Awaitable, Callable
 
@@ -142,25 +143,31 @@ class CommandRegistry:
 def build_registry(admin_prefix: str, public_prefix: str = "/") -> CommandRegistry:
     registry = CommandRegistry(admin_prefix, public_prefix)
 
-    @registry.register("help", aliases=("h",), help_text="查看命令")
+    @registry.register("help", aliases=("h", "帮助", "菜单", "命令"), help_text="查看命令")
     async def help_cmd(ctx: CommandContext, _: list[str]) -> CommandResult:
         lines = ["可用命令：", *registry.help_lines(ctx.is_admin)]
         return CommandResult("\n".join(lines))
 
-    @registry.register("ping", help_text="检查 bridge 是否在线")
+    @registry.register("ping", aliases=("测试", "在线"), help_text="检查 bridge 是否在线")
     async def ping_cmd(_: CommandContext, __: list[str]) -> CommandResult:
         return CommandResult("pong")
 
-    @registry.register("forget", help_text="清空当前对话上下文")
+    @registry.register("forget", aliases=("清空", "忘记"), help_text="清空当前对话上下文")
     async def forget_cmd(ctx: CommandContext, _: list[str]) -> CommandResult:
         ctx.state.clear_conversation(ctx.conversation_key)
-        return CommandResult("已清空这条对话线的上下文。")
+        ctx.state.reset_hermes_session(ctx.conversation_key)
+        return CommandResult("已重置这条对话线的 Hermes session。")
 
-    @registry.register("status", help_text="[workflow] [repo=alias] [branch=name] 查看 GitHub Actions 状态")
+    @registry.register(
+        "status",
+        aliases=("状态", "工作流", "actions"),
+        help_text="[workflow] [repo=alias] [branch=name] 查看 GitHub Actions 状态",
+    )
     async def status_cmd(ctx: CommandContext, args: list[str]) -> CommandResult:
         options = parse_options(args)
         repo = resolve_repo(ctx.config, options)
         workflow_name = options.kv.get("workflow") or (options.positionals[0] if options.positionals else None)
+        workflow_name = normalize_workflow_alias(workflow_name) if workflow_name else None
         workflow_id = repo.workflow_id(workflow_name) if workflow_name else None
         branch = options.kv.get("branch")
         runs = await ctx.github.list_workflow_runs(repo, workflow_id=workflow_id, branch=branch, per_page=5)
@@ -177,7 +184,7 @@ def build_registry(admin_prefix: str, public_prefix: str = "/") -> CommandRegist
             lines.append(f"#{number} {title} [{ref}] {status}\n{url}".strip())
         return CommandResult("\n".join(lines))
 
-    @registry.register("pr", help_text="[repo=alias] 列出打开的 PR")
+    @registry.register("pr", aliases=("拉取请求",), help_text="[repo=alias] 列出打开的 PR")
     async def pr_cmd(ctx: CommandContext, args: list[str]) -> CommandResult:
         options = parse_options(args)
         repo = resolve_repo(ctx.config, options)
@@ -191,15 +198,17 @@ def build_registry(admin_prefix: str, public_prefix: str = "/") -> CommandRegist
 
     @registry.register(
         "release",
+        aliases=("发布", "发版"),
         requires_admin=True,
         sensitive=True,
-        help_text="[ref] [repo=alias] [key=value...] 触发 release workflow",
+        help_text="[ref] [repo=alias] [key=value...] 触发 release workflow；默认 main/默认仓库/当天标题",
     )
     async def release_cmd(ctx: CommandContext, args: list[str]) -> CommandResult:
         return await dispatch_workflow(ctx, args, default_workflow="release")
 
     @registry.register(
         "deploy",
+        aliases=("部署",),
         requires_admin=True,
         sensitive=True,
         help_text="[ref] [repo=alias] [key=value...] 触发 deploy workflow",
@@ -207,7 +216,7 @@ def build_registry(admin_prefix: str, public_prefix: str = "/") -> CommandRegist
     async def deploy_cmd(ctx: CommandContext, args: list[str]) -> CommandResult:
         return await dispatch_workflow(ctx, args, default_workflow="deploy")
 
-    @registry.register("repos", requires_admin=True, help_text="查看 repo 配置")
+    @registry.register("repos", aliases=("仓库", "项目"), requires_admin=True, help_text="查看 repo 配置")
     async def repos_cmd(ctx: CommandContext, _: list[str]) -> CommandResult:
         if not ctx.config.repos:
             return CommandResult("尚未配置 GitHub repo。", private=True)
@@ -218,45 +227,50 @@ def build_registry(admin_prefix: str, public_prefix: str = "/") -> CommandRegist
             lines.append(f"{marker} {alias} = {repo.slug} ref={repo.default_ref} workflows=[{workflows}]")
         return CommandResult("\n".join(lines), private=True)
 
-    @registry.register("group", requires_admin=True, help_text="show|on|off|cooldown S|keyword add/del WORD")
+    @registry.register(
+        "group",
+        aliases=("群", "群设置"),
+        requires_admin=True,
+        help_text="show|on|off|cooldown S|keyword add/del WORD",
+    )
     async def group_cmd(ctx: CommandContext, args: list[str]) -> CommandResult:
         if not ctx.group_id:
             return CommandResult("这个命令需要在群聊里使用。", private=True)
-        if not args or args[0] == "show":
+        if not args or args[0].lower() in {"show", "查看", "状态"}:
             cfg = ctx.state.effective_group_config(ctx.group_id, ctx.config.group_config(ctx.group_id))
             return CommandResult(format_group_config(ctx.group_id, cfg), private=True)
 
         action = args[0].lower()
-        if action in {"on", "enable"}:
+        if action in {"on", "enable", "开启", "打开"}:
             ctx.state.set_group_override(ctx.group_id, {"autonomous_enabled": True})
             return CommandResult("已开启本群自主互动。", private=True)
-        if action in {"off", "disable"}:
+        if action in {"off", "disable", "关闭", "关"}:
             ctx.state.set_group_override(ctx.group_id, {"autonomous_enabled": False})
             return CommandResult("已关闭本群自主互动。", private=True)
-        if action == "cooldown" and len(args) >= 2:
+        if action in {"cooldown", "冷却"} and len(args) >= 2:
             cooldown = max(0, int(args[1]))
             ctx.state.set_group_override(ctx.group_id, {"min_seconds_between_replies": cooldown})
             return CommandResult(f"本群自主回复冷却已设为 {cooldown}s。", private=True)
-        if action == "keyword" and len(args) >= 3:
+        if action in {"keyword", "关键词"} and len(args) >= 3:
             op = args[1].lower()
             word = " ".join(args[2:]).strip()
             cfg = ctx.state.effective_group_config(ctx.group_id, ctx.config.group_config(ctx.group_id))
             keywords = list(dict.fromkeys(cfg.keywords))
-            if op in {"add", "+"} and word:
+            if op in {"add", "+", "添加", "加"} and word:
                 keywords.append(word)
                 keywords = list(dict.fromkeys(keywords))
                 ctx.state.set_group_override(ctx.group_id, {"keywords": keywords})
                 return CommandResult(f"已添加关键词：{word}", private=True)
-            if op in {"del", "remove", "-"} and word:
+            if op in {"del", "remove", "-", "删除", "删"} and word:
                 keywords = [item for item in keywords if item != word]
                 ctx.state.set_group_override(ctx.group_id, {"keywords": keywords})
                 return CommandResult(f"已删除关键词：{word}", private=True)
         return CommandResult(
-            "用法：group show|on|off|cooldown S|keyword add/del WORD",
+            "用法：group show|on|off|cooldown S|keyword add/del WORD；也支持 群 查看|开启|关闭|冷却 S|关键词 添加/删除 WORD",
             private=True,
         )
 
-    @registry.register("health", requires_admin=True, help_text="检查 Hermes/NapCat")
+    @registry.register("health", aliases=("健康", "检查"), requires_admin=True, help_text="检查 Hermes/NapCat")
     async def health_cmd(ctx: CommandContext, _: list[str]) -> CommandResult:
         parts = ["bridge: ok"]
         try:
@@ -271,6 +285,17 @@ def build_registry(admin_prefix: str, public_prefix: str = "/") -> CommandRegist
             parts.append(f"napcat: error {exc}")
         return CommandResult("\n".join(parts), private=True)
 
+    @registry.register("model", aliases=("模型",), requires_admin=True, help_text="查看/切换模型：默认|mimo|flash|pro")
+    async def model_cmd(ctx: CommandContext, args: list[str]) -> CommandResult:
+        configured = ctx.hermes.model
+        return CommandResult(
+            "当前 API 模型名："
+            f"{configured}\n"
+            "实际底层模型由 Hermes gateway 的 hermes-config.yaml 决定；"
+            "当前部署不要在 QQ 里热切模型，避免显示模型和真实模型不一致。",
+            private=True,
+        )
+
     return registry
 
 
@@ -280,16 +305,67 @@ class ParsedOptions:
     kv: dict[str, str]
 
 
+OPTION_KEY_ALIASES = {
+    "repo": "repo",
+    "仓库": "repo",
+    "项目": "repo",
+    "workflow": "workflow",
+    "工作流": "workflow",
+    "流程": "workflow",
+    "branch": "branch",
+    "分支": "branch",
+    "ref": "ref",
+    "引用": "ref",
+    "release_title": "release_title",
+    "标题": "release_title",
+    "发布标题": "release_title",
+    "版本": "release_title",
+    "tag": "tag",
+    "标签": "tag",
+}
+
+
+WORKFLOW_ALIASES = {
+    "发布": "release",
+    "发版": "release",
+    "部署": "deploy",
+    "构建": "ci",
+    "编译": "ci",
+}
+
+CHINA_TIME = timezone(timedelta(hours=8))
+
+
 def parse_options(args: list[str]) -> ParsedOptions:
     positionals: list[str] = []
     kv: dict[str, str] = {}
     for arg in args:
         if "=" in arg:
             key, value = arg.split("=", 1)
-            kv[key.strip().lower()] = value.strip()
+            key = normalize_option_key(key)
+            kv[key] = value.strip()
         else:
             positionals.append(arg)
     return ParsedOptions(positionals=positionals, kv=kv)
+
+
+def normalize_option_key(key: str) -> str:
+    normalized = key.strip().lower()
+    return OPTION_KEY_ALIASES.get(normalized, normalized)
+
+
+def normalize_workflow_alias(value: str) -> str:
+    normalized = value.strip().lower()
+    return WORKFLOW_ALIASES.get(normalized, normalized)
+
+
+def default_release_title(now: datetime | None = None) -> str:
+    current = now or datetime.now(CHINA_TIME)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=CHINA_TIME)
+    else:
+        current = current.astimezone(CHINA_TIME)
+    return current.strftime("%Y.%m%d")
 
 
 def resolve_repo(config: BridgeConfig, options: ParsedOptions) -> RepoConfig:
@@ -300,10 +376,12 @@ def resolve_repo(config: BridgeConfig, options: ParsedOptions) -> RepoConfig:
 async def dispatch_workflow(ctx: CommandContext, args: list[str], *, default_workflow: str) -> CommandResult:
     options = parse_options(args)
     repo = resolve_repo(ctx.config, options)
-    workflow_alias = options.kv.pop("workflow", default_workflow)
+    workflow_alias = normalize_workflow_alias(options.kv.pop("workflow", default_workflow))
     workflow_id = repo.workflow_id(workflow_alias)
     ref = options.kv.pop("ref", None) or (options.positionals[0] if options.positionals else repo.default_ref)
     inputs = dict(options.kv)
+    if workflow_alias == "release":
+        inputs.setdefault("release_title", default_release_title())
     await ctx.github.trigger_workflow(repo, workflow_id=workflow_id, ref=ref, inputs=inputs)
     input_text = f" inputs={inputs}" if inputs else ""
     return CommandResult(

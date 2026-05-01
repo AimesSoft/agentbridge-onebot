@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
+import hashlib
 from pathlib import Path
 import json
 import time
@@ -166,6 +167,42 @@ class BridgeState:
         self.data["group_reply_times"][group_id] = time.time()
         self.save()
 
+    def runtime_setting(self, key: str, default: str | None = None) -> str | None:
+        settings = self.data.get("runtime_settings", {})
+        if not isinstance(settings, dict):
+            return default
+        value = settings.get(key)
+        return str(value) if value is not None else default
+
+    def set_runtime_setting(self, key: str, value: str | None) -> None:
+        settings = self.data.setdefault("runtime_settings", {})
+        if not isinstance(settings, dict):
+            settings = {}
+            self.data["runtime_settings"] = settings
+        if value is None:
+            settings.pop(key, None)
+        else:
+            settings[key] = value
+        self.save()
+
+    def hermes_session_id(self, conversation_key: str) -> str:
+        generations = self.data.setdefault("hermes_session_generations", {})
+        if not isinstance(generations, dict):
+            generations = {}
+            self.data["hermes_session_generations"] = generations
+        generation = int(generations.get(conversation_key, 0) or 0)
+        digest = hashlib.sha256(f"{conversation_key}:{generation}".encode("utf-8")).hexdigest()[:24]
+        return f"qqbridge-{digest}"
+
+    def reset_hermes_session(self, conversation_key: str) -> str:
+        generations = self.data.setdefault("hermes_session_generations", {})
+        if not isinstance(generations, dict):
+            generations = {}
+            self.data["hermes_session_generations"] = generations
+        generations[conversation_key] = int(generations.get(conversation_key, 0) or 0) + 1
+        self.save()
+        return self.hermes_session_id(conversation_key)
+
     def create_agent_run(
         self,
         *,
@@ -255,6 +292,8 @@ class BridgeState:
             "group_overrides": {},
             "group_reply_times": {},
             "agent_runs": {},
+            "runtime_settings": {},
+            "hermes_session_generations": {},
         }
         if not self.path.exists():
             return default

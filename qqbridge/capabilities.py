@@ -3,6 +3,7 @@ from __future__ import annotations
 
 ONEBOT_CALL = "onebot.call"
 QQ_SEND_MESSAGE = "qq.send_message"
+QQ_SEND_PRIVATE_MESSAGE = "qq.send_private_message"
 QQ_REPLY_MESSAGE = "qq.reply_message"
 QQ_SEND_FACE = "qq.send_face"
 QQ_SET_GROUP_CARD = "qq.set_group_card"
@@ -59,6 +60,7 @@ GROUP_AMBIENT_TOOLS = [
 ]
 
 PRIVATE_TOOLS = [
+    QQ_SEND_PRIVATE_MESSAGE,
     *GITHUB_READ_TOOLS,
 ]
 

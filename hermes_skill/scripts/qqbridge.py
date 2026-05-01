@@ -24,6 +24,11 @@ def main() -> int:
     send.add_argument("--group-id", required=True)
     send.add_argument("--text", required=True)
 
+    send_private = sub.add_parser("send-private-message")
+    send_private.add_argument("--run-id", required=True)
+    send_private.add_argument("--user-id", required=True)
+    send_private.add_argument("--text", required=True)
+
     reply = sub.add_parser("reply-message")
     reply.add_argument("--run-id", required=True)
     reply.add_argument("--message-id", required=True)
@@ -105,6 +110,8 @@ def build_request(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
         )
     if command == "send-message":
         return "/skills/qq/send_message", {"run_id": args.run_id, "group_id": args.group_id, "text": args.text}
+    if command == "send-private-message":
+        return "/skills/qq/send_private_message", {"run_id": args.run_id, "user_id": args.user_id, "text": args.text}
     if command == "reply-message":
         return "/skills/qq/reply_message", {"run_id": args.run_id, "message_id": args.message_id, "text": args.text}
     if command == "send-face":
