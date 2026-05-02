@@ -164,7 +164,7 @@ async def test_group_llm_uses_hermes_group_session(service: BridgeService) -> No
 
 
 @pytest.mark.asyncio
-async def test_mention_opens_group_attention_window(service: BridgeService) -> None:
+async def test_mention_does_not_open_group_attention_until_agent_sends(service: BridgeService) -> None:
     service.settings.group_attention_batch_interval_seconds = 0
     first = await service.handle_event(
         {
@@ -188,19 +188,15 @@ async def test_mention_opens_group_attention_window(service: BridgeService) -> N
             "message": "快点说",
         }
     )
-    tick = await service.tick_group_attention()
 
     assert first["reason"] == "mention"
-    assert second["action"] == "queued"
-    assert second["reason"] == "active_group_attention"
-    assert tick["groups"][0]["action"] == "agent_handoff"
-    assert len(service.hermes.calls) == 2
-    assert "active_group_attention" in service.hermes.calls[1]["user"]
-    assert "快点说" in service.hermes.calls[1]["user"]
+    assert second["action"] == "ignored"
+    assert second["reason"] == "no_route"
+    assert len(service.hermes.calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_group_attention_batches_messages_from_the_whole_group(service: BridgeService) -> None:
+async def test_group_attention_batches_messages_after_agent_reply(service: BridgeService) -> None:
     service.settings.group_attention_batch_interval_seconds = 0
     await service.handle_event(
         {
@@ -212,6 +208,15 @@ async def test_group_attention_batches_messages_from_the_whole_group(service: Br
             "message_id": 24,
             "message": "桥桥 你怎么看？",
         }
+    )
+    service.state.open_group_attention(
+        group_id="333",
+        ttl_seconds=service.settings.group_attention_ttl_seconds,
+        batch_interval_seconds=service.settings.group_attention_batch_interval_seconds,
+        max_batches=service.settings.group_attention_max_batches,
+        reason="qq.send_message",
+        trigger_user_id="222",
+        trigger_message_id="24",
     )
     first_followup = await service.handle_event(
         {
@@ -243,6 +248,47 @@ async def test_group_attention_batches_messages_from_the_whole_group(service: Br
     assert len(service.hermes.calls) == 2
     assert "我插一句" in service.hermes.calls[1]["user"]
     assert "那你快说" in service.hermes.calls[1]["user"]
+
+
+@pytest.mark.asyncio
+async def test_group_attention_closes_when_agent_does_not_reply_or_extend(service: BridgeService) -> None:
+    service.settings.group_attention_batch_interval_seconds = 0
+    service.hermes.answer = '{"skip": true}'
+    service.state.open_group_attention(
+        group_id="333",
+        ttl_seconds=service.settings.group_attention_ttl_seconds,
+        batch_interval_seconds=service.settings.group_attention_batch_interval_seconds,
+        max_batches=service.settings.group_attention_max_batches,
+        reason="qq.send_message",
+    )
+    queued = await service.handle_event(
+        {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": 999,
+            "group_id": 333,
+            "user_id": 222,
+            "message_id": 27,
+            "message": "那咋了",
+        }
+    )
+    tick = await service.tick_group_attention()
+    after = await service.handle_event(
+        {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": 999,
+            "group_id": 333,
+            "user_id": 222,
+            "message_id": 28,
+            "message": "还在吗",
+        }
+    )
+
+    assert queued["action"] == "queued"
+    assert tick["groups"][0]["action"] == "skipped"
+    assert service.state.active_group_attention("333") is None
+    assert after["action"] == "ignored"
 
 
 @pytest.mark.asyncio

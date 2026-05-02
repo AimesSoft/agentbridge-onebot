@@ -39,6 +39,12 @@ def main() -> int:
     face.add_argument("--group-id", required=True)
     face.add_argument("--face-id", required=True)
 
+    extend = sub.add_parser("extend-group-attention")
+    extend.add_argument("--run-id", required=True)
+    extend.add_argument("--group-id")
+    extend.add_argument("--seconds", type=int, default=60)
+    extend.add_argument("--reason", default="")
+
     card = sub.add_parser("set-group-card")
     card.add_argument("--run-id", required=True)
     card.add_argument("--group-id", required=True)
@@ -116,6 +122,16 @@ def build_request(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
         return "/skills/qq/reply_message", {"run_id": args.run_id, "message_id": args.message_id, "text": args.text}
     if command == "send-face":
         return "/skills/qq/send_face", {"run_id": args.run_id, "group_id": args.group_id, "face_id": args.face_id}
+    if command == "extend-group-attention":
+        return (
+            "/skills/qq/extend_group_attention",
+            {
+                "run_id": args.run_id,
+                "group_id": args.group_id,
+                "seconds": args.seconds,
+                "reason": args.reason,
+            },
+        )
     if command == "set-group-card":
         return (
             "/skills/qq/set_group_card",

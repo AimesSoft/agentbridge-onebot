@@ -88,7 +88,6 @@ class BridgeService:
         if not self.state.allow_user_llm(inbound.user_id, self.settings.user_rate_limit_per_minute):
             return {"ok": True, "action": "ignored", "reason": "rate_limited"}
 
-        self._open_group_attention_if_needed(inbound, reason)
         run = self._create_run_for_inbound(inbound, reason)
         log.info("[RUN] id=%s tools=%s", run.get("run_id"), run.get("allowed_tools"))
         user_content = self._with_run_context(self._build_user_content(inbound), run, inbound=inbound)
@@ -106,7 +105,6 @@ class BridgeService:
         # Response text is for logging/decision only.
         if inbound.group_id:
             self.state.remove_unread_group_messages(inbound.group_id, [inbound.message_id])
-            self.state.mark_group_replied(inbound.group_id)
         return {"ok": True, "action": "agent_handoff", "reason": reason}
 
     async def _handle_command(self, inbound: InboundMessage) -> dict[str, Any]:
@@ -157,21 +155,6 @@ class BridgeService:
             return with_persona(GROUP_KEYWORD_PROMPT, self.settings.bot_persona), True, f"keyword:{hit}"
 
         return None
-
-    def _open_group_attention_if_needed(self, inbound: InboundMessage, reason: str) -> None:
-        if not self.settings.group_attention_enabled or not inbound.group_id:
-            return
-        if reason not in {"mention", "reply_to_bot"}:
-            return
-        self.state.open_group_attention(
-            group_id=inbound.group_id,
-            ttl_seconds=self.settings.group_attention_ttl_seconds,
-            batch_interval_seconds=self.settings.group_attention_batch_interval_seconds,
-            max_batches=self.settings.group_attention_max_batches,
-            reason=reason,
-            trigger_user_id=inbound.user_id,
-            trigger_message_id=inbound.message_id,
-        )
 
     def _queue_group_attention_if_active(self, inbound: InboundMessage) -> bool:
         if not self.settings.group_attention_enabled or not inbound.group_id:
@@ -269,13 +252,13 @@ class BridgeService:
             self.state.clear_unread_group_messages(group_id)
             return {"action": "skipped", "reason": "agent_skip"}
 
-        self.state.mark_group_replied(group_id)
         self.state.clear_unread_group_messages(group_id)
         return {"action": "agent_handoff"}
 
     async def _run_group_attention_batch(self, group_id: str, batch: list[dict[str, Any]]) -> dict[str, Any]:
         if not batch:
             return {"action": "skipped", "reason": "empty_batch"}
+        attention_generation = self.state.group_attention_generation(group_id)
         run = self.state.create_agent_run(
             mode="active_dialogue",
             group_id=group_id,
@@ -293,11 +276,13 @@ class BridgeService:
             user_content,
             session_id=session_id,
         )
-        if is_skip_response(answer):
+        plan = parse_agent_plan(answer)
+        if plan.should_skip:
             self.state.remove_unread_group_messages(group_id, [str(item.get("message_id")) for item in batch])
+            self.state.close_group_attention_if_generation(group_id, attention_generation)
             return {"action": "skipped", "reason": "agent_skip"}
         self.state.remove_unread_group_messages(group_id, [str(item.get("message_id")) for item in batch])
-        self.state.mark_group_replied(group_id)
+        self.state.close_group_attention_if_generation(group_id, attention_generation)
         return {"action": "agent_handoff"}
 
     def _create_run_for_inbound(self, inbound: InboundMessage, reason: str) -> dict[str, Any]:
@@ -407,8 +392,8 @@ class BridgeService:
         return (
             f"QQ群号：{group_id}\n"
             f"场景：active_group_attention\n"
-            f"说明：你刚刚被 @ 或被回复后，Bridge 为这个群打开了短时注意力窗口。"
-            f"下面是窗口内攒下的一小批新消息，不是随机 ambient。\n"
+            f"说明：你上次在群里发言后，Bridge 为这个群打开了短时注意力窗口。"
+            f"下面是倒计时内攒下的一批新消息，不是随机 ambient。\n"
             f"群聊消息归档 JSONL 路径：\n{archive_paths}\n\n"
             f"最近群聊：\n" + "\n".join(recent_lines) + "\n\n"
             f"本批新消息：\n" + "\n".join(batch_lines)
@@ -430,6 +415,7 @@ class BridgeService:
                 message_id = _response_message_id(data)
                 if message_id:
                     self.state.add_bot_message_id(inbound.group_id, message_id)
+                self.state.mark_group_replied(inbound.group_id)
             else:
                 await self._send_private(inbound.user_id, chunk)
 

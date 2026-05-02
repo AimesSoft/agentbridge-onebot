@@ -113,7 +113,12 @@ POST /skills/qq/reply_message
 
 POST /skills/qq/send_face
 {"run_id": "<run_id>", "group_id": "123", "face_id": "14"}
+
+POST /skills/qq/extend_group_attention
+{"run_id": "<run_id>", "group_id": "123", "seconds": 60, "reason": "wait for logs"}
 ```
+
+After you send a group message, AgentBridge automatically opens a short group attention window. If an active attention batch does not need an immediate reply but should keep listening for more context, call `extend_group_attention`.
 
 ### Group Tools
 
@@ -160,6 +165,7 @@ python ${HERMES_SKILL_DIR}/scripts/qqbridge.py reply-message --run-id <run_id> -
 python ${HERMES_SKILL_DIR}/scripts/qqbridge.py send-message --run-id <run_id> --group-id 123 --text "release 状态我查到了。"
 python ${HERMES_SKILL_DIR}/scripts/qqbridge.py send-private-message --run-id <run_id> --user-id 456 --text "这是私聊回复。"
 python ${HERMES_SKILL_DIR}/scripts/qqbridge.py send-face --run-id <run_id> --group-id 123 --face-id 14
+python ${HERMES_SKILL_DIR}/scripts/qqbridge.py extend-group-attention --run-id <run_id> --group-id 123 --seconds 60 --reason "wait for logs"
 python ${HERMES_SKILL_DIR}/scripts/qqbridge.py member-info --run-id <run_id> --group-id 123 --user-id 456
 python ${HERMES_SKILL_DIR}/scripts/qqbridge.py set-group-ban --run-id <run_id> --group-id 123 --user-id 456 --duration 60
 python ${HERMES_SKILL_DIR}/scripts/qqbridge.py onebot-call --run-id <run_id> --action get_group_info --params-json '{"group_id":123}'

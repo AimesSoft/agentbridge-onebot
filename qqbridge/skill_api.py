@@ -42,6 +42,13 @@ class SendFaceRequest(BaseModel):
     face_id: str
 
 
+class ExtendGroupAttentionRequest(BaseModel):
+    run_id: str
+    group_id: str | None = None
+    seconds: int = Field(default=60, ge=5, le=3600)
+    reason: str = Field(default="", max_length=200)
+
+
 class SetGroupCardRequest(BaseModel):
     run_id: str
     group_id: str
@@ -108,22 +115,35 @@ def build_skill_router(
     async def onebot_call(payload: OneBotCallRequest, request: Request) -> dict[str, Any]:
         _verify_skill_token(request, settings)
         group_id = _group_id_from_params(payload.params)
-        _authorize(state, run_id=payload.run_id, tool=cap.ONEBOT_CALL, group_id=group_id)
+        run = _authorize(state, run_id=payload.run_id, tool=cap.ONEBOT_CALL, group_id=group_id)
         _authorize_onebot_action(settings, payload.action)
         data = await napcat.call(payload.action, payload.params)
         message_id = _response_message_id(data)
-        if message_id and group_id:
-            state.add_bot_message_id(group_id, message_id)
+        if group_id and payload.action in cap.ONEBOT_CHAT_ACTIONS:
+            _after_agent_group_message(
+                state=state,
+                settings=settings,
+                run=run,
+                group_id=group_id,
+                message_id=message_id,
+                reason=f"onebot:{payload.action}",
+            )
         return {"ok": True, "action": payload.action, "data": data.get("data", data)}
 
     @router.post("/qq/send_message")
     async def qq_send_message(payload: SendMessageRequest, request: Request) -> dict[str, Any]:
         _verify_skill_token(request, settings)
-        _authorize(state, run_id=payload.run_id, tool=cap.QQ_SEND_MESSAGE, group_id=payload.group_id)
+        run = _authorize(state, run_id=payload.run_id, tool=cap.QQ_SEND_MESSAGE, group_id=payload.group_id)
         data = await napcat.send_msg(message_type="group", group_id=payload.group_id, message=payload.text)
         message_id = _response_message_id(data)
-        if message_id:
-            state.add_bot_message_id(payload.group_id, message_id)
+        _after_agent_group_message(
+            state=state,
+            settings=settings,
+            run=run,
+            group_id=payload.group_id,
+            message_id=message_id,
+            reason="qq.send_message",
+        )
         return {"ok": True, "message_id": message_id}
 
     @router.post("/qq/send_private_message")
@@ -140,7 +160,7 @@ def build_skill_router(
         if not source or not source.get("group_id"):
             raise HTTPException(status_code=404, detail="message_id not found in bridge state")
         group_id = str(source["group_id"])
-        _authorize(state, run_id=payload.run_id, tool=cap.QQ_REPLY_MESSAGE, group_id=group_id)
+        run = _authorize(state, run_id=payload.run_id, tool=cap.QQ_REPLY_MESSAGE, group_id=group_id)
         data = await napcat.send_msg(
             message_type="group",
             group_id=group_id,
@@ -150,23 +170,60 @@ def build_skill_router(
             ],
         )
         message_id = _response_message_id(data)
-        if message_id:
-            state.add_bot_message_id(group_id, message_id)
+        _after_agent_group_message(
+            state=state,
+            settings=settings,
+            run=run,
+            group_id=group_id,
+            message_id=message_id,
+            reason="qq.reply_message",
+        )
         return {"ok": True, "group_id": group_id, "message_id": message_id}
 
     @router.post("/qq/send_face")
     async def qq_send_face(payload: SendFaceRequest, request: Request) -> dict[str, Any]:
         _verify_skill_token(request, settings)
-        _authorize(state, run_id=payload.run_id, tool=cap.QQ_SEND_FACE, group_id=payload.group_id)
+        run = _authorize(state, run_id=payload.run_id, tool=cap.QQ_SEND_FACE, group_id=payload.group_id)
         data = await napcat.send_msg(
             message_type="group",
             group_id=payload.group_id,
             message=[{"type": "face", "data": {"id": payload.face_id}}],
         )
         message_id = _response_message_id(data)
-        if message_id:
-            state.add_bot_message_id(payload.group_id, message_id)
+        _after_agent_group_message(
+            state=state,
+            settings=settings,
+            run=run,
+            group_id=payload.group_id,
+            message_id=message_id,
+            reason="qq.send_face",
+        )
         return {"ok": True, "message_id": message_id}
+
+    @router.post("/qq/extend_group_attention")
+    async def qq_extend_group_attention(payload: ExtendGroupAttentionRequest, request: Request) -> dict[str, Any]:
+        _verify_skill_token(request, settings)
+        run = _authorize(state, run_id=payload.run_id, tool=cap.QQ_EXTEND_GROUP_ATTENTION, group_id=payload.group_id)
+        group_id = payload.group_id or run.get("group_id")
+        if not group_id:
+            raise HTTPException(status_code=400, detail="group_id is required for this run")
+        seconds = min(payload.seconds, settings.group_attention_max_extension_seconds)
+        state.open_group_attention(
+            group_id=str(group_id),
+            ttl_seconds=seconds,
+            batch_interval_seconds=settings.group_attention_batch_interval_seconds,
+            max_batches=settings.group_attention_max_batches,
+            reason=f"agent_extend:{payload.reason}" if payload.reason else "agent_extend",
+            trigger_user_id=run.get("user_id"),
+            trigger_message_id=run.get("trigger_message_id"),
+        )
+        attention = state.active_group_attention(str(group_id)) or {}
+        return {
+            "ok": True,
+            "group_id": str(group_id),
+            "expires_at": attention.get("expires_at"),
+            "seconds": seconds,
+        }
 
     @router.post("/qq/set_group_card")
     async def qq_set_group_card(payload: SetGroupCardRequest, request: Request) -> dict[str, Any]:
@@ -278,6 +335,31 @@ def _authorize_onebot_action(settings: Settings, action: str) -> None:
         return
     if action not in allowed:
         raise HTTPException(status_code=403, detail=f"onebot action is not allowed at this level: {action}")
+
+
+def _after_agent_group_message(
+    *,
+    state: BridgeState,
+    settings: Settings,
+    run: dict[str, Any],
+    group_id: str,
+    message_id: str | None,
+    reason: str,
+) -> None:
+    if message_id:
+        state.add_bot_message_id(group_id, message_id)
+    state.mark_group_replied(group_id)
+    if not settings.group_attention_enabled:
+        return
+    state.open_group_attention(
+        group_id=group_id,
+        ttl_seconds=settings.group_attention_ttl_seconds,
+        batch_interval_seconds=settings.group_attention_batch_interval_seconds,
+        max_batches=settings.group_attention_max_batches,
+        reason=reason,
+        trigger_user_id=run.get("user_id"),
+        trigger_message_id=run.get("trigger_message_id"),
+    )
 
 
 def _group_id_from_params(params: dict[str, Any]) -> str | None:

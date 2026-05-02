@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     group_attention_max_batches: int = 8
     group_attention_max_batch_messages: int = 20
     group_attention_max_buffer_messages: int = 80
+    group_attention_max_extension_seconds: int = 300
     skill_onebot_level: str = "group_admin"
 
     max_history_messages: int = 16

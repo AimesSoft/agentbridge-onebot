@@ -116,6 +116,45 @@ async def test_reply_message_skill(tmp_path) -> None:
     assert response.status_code == 200
     assert response.json()["group_id"] == "123"
     assert napcat.sent[0]["message"][0] == {"type": "reply", "data": {"id": "42"}}
+    assert state.is_reply_to_bot("123", "99")
+    assert state.active_group_attention("123") is not None
+
+
+@pytest.mark.asyncio
+async def test_send_message_skill_opens_group_attention(tmp_path) -> None:
+    app, state, _, _ = make_client(tmp_path)
+    run_id = create_run(state, group_id="123")
+
+    response = await post_json(
+        app,
+        "/skills/qq/send_message",
+        headers={"X-QQBridge-Skill-Token": "secret"},
+        json={"run_id": run_id, "group_id": "123", "text": "我看一下。"},
+    )
+
+    assert response.status_code == 200
+    attention = state.active_group_attention("123")
+    assert attention is not None
+    assert attention["reason"] == "qq.send_message"
+
+
+@pytest.mark.asyncio
+async def test_extend_group_attention_skill_uses_run_group(tmp_path) -> None:
+    app, state, _, _ = make_client(tmp_path)
+    run_id = create_run(state, group_id="123")
+
+    response = await post_json(
+        app,
+        "/skills/qq/extend_group_attention",
+        headers={"X-QQBridge-Skill-Token": "secret"},
+        json={"run_id": run_id, "seconds": 90, "reason": "wait for logs"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["group_id"] == "123"
+    attention = state.active_group_attention("123")
+    assert attention is not None
+    assert attention["reason"] == "agent_extend:wait for logs"
 
 
 @pytest.mark.asyncio

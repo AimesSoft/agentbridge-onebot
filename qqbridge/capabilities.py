@@ -6,6 +6,7 @@ QQ_SEND_MESSAGE = "qq.send_message"
 QQ_SEND_PRIVATE_MESSAGE = "qq.send_private_message"
 QQ_REPLY_MESSAGE = "qq.reply_message"
 QQ_SEND_FACE = "qq.send_face"
+QQ_EXTEND_GROUP_ATTENTION = "qq.extend_group_attention"
 QQ_SET_GROUP_CARD = "qq.set_group_card"
 QQ_SET_GROUP_BAN = "qq.set_group_ban"
 QQ_DELETE_MSG = "qq.delete_msg"
@@ -23,6 +24,7 @@ QQ_CHAT_TOOLS = [
     QQ_SEND_MESSAGE,
     QQ_REPLY_MESSAGE,
     QQ_SEND_FACE,
+    QQ_EXTEND_GROUP_ATTENTION,
 ]
 
 QQ_GROUP_READ_TOOLS = [

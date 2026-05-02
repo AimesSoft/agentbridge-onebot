@@ -57,12 +57,14 @@ handoff 层决定何时调用 Hermes，以及如何构造上下文包。
 
 群级注意力窗口：
 
-- @bot 或回复 bot 后，Bridge 会为当前群打开一个短时注意力窗口。
+- @bot 或回复 bot 只负责立即唤醒 Hermes，不直接长期监听群聊。
+- 只有 Agent 真的通过 QQ skill 发出群消息后，Bridge 才会为当前群打开一个短时注意力窗口。
 - 窗口内的普通群消息不会逐条调用 Hermes，而是先进入 active group attention buffer。
-- 后台轻量 tick 会每隔 `GROUP_ATTENTION_BATCH_INTERVAL_SECONDS` 左右把攒下的小批消息交给 Hermes。
-- 每条窗口内新消息都会刷新倒计时，让对话在真实活跃时自然持续。
+- 每条窗口内新消息都会刷新 `GROUP_ATTENTION_BATCH_INTERVAL_SECONDS` 倒计时；倒计时安静结束后，Bridge 把这一批消息交给 Hermes。
+- 如果 Hermes 在这批消息后再次发言，skill 会自动重新打开注意力窗口。
+- 如果 Hermes 不发言但想继续等补充，可以调用 `qq.extend_group_attention` 延长观察。
 - 窗口受 `GROUP_ATTENTION_TTL_SECONDS`、`GROUP_ATTENTION_MAX_BATCHES` 和 buffer 上限约束，避免无限续命。
-- prompt 会明确告诉 Hermes：这是被 @ 后的群聊续场，不是 ambient 随机看群。
+- prompt 会明确告诉 Hermes：这是它上次发言后的群聊续场，不是 ambient 随机看群。
 
 ambient 触发：
 
@@ -177,17 +179,21 @@ NapCat send_msg
 ```text
 @bot / 回复 bot
   ↓
-立即 handoff，并打开群级注意力窗口
+立即 handoff
+  ↓
+Hermes 通过 skill 发送群消息
+  ↓
+AgentBridge 打开群级注意力窗口
   ↓
 窗口内普通群消息
   ↓
-只入队，不逐条调用 Hermes
+每条消息刷新倒计时，只入队，不逐条调用 Hermes
   ↓
-短间隔 tick 打包新消息
+倒计时结束后打包新消息
   ↓
 创建 active_dialogue agent_run
   ↓
-Hermes 判断继续回复或 SKIP
+Hermes 判断回复、SKIP，或调用 qq.extend_group_attention 继续观察
 ```
 
 ### Ambient 随机看群

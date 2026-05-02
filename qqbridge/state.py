@@ -199,11 +199,8 @@ class BridgeState:
         now = int(time.time())
         current = attentions.get(str(group_id))
         buffer = current.get("buffer", []) if isinstance(current, dict) and isinstance(current.get("buffer"), list) else []
-        next_dispatch_at = (
-            int(current.get("next_dispatch_at", 0))
-            if isinstance(current, dict) and current.get("next_dispatch_at") is not None
-            else 0
-        )
+        generation = int(current.get("generation", 0) or 0) + 1 if isinstance(current, dict) else 1
+        next_dispatch_at = now + max(0, batch_interval_seconds) if buffer else 0
         attentions[str(group_id)] = {
             "group_id": str(group_id),
             "trigger_user_id": str(trigger_user_id) if trigger_user_id else None,
@@ -212,6 +209,7 @@ class BridgeState:
             "remaining_batches": max_batches,
             "batch_interval_seconds": max(0, batch_interval_seconds),
             "next_dispatch_at": next_dispatch_at,
+            "generation": generation,
             "reason": reason,
             "buffer": buffer,
             "updated_at": now,
@@ -251,8 +249,7 @@ class BridgeState:
         now = int(time.time())
         attention["expires_at"] = now + max(1, ttl_seconds)
         attention["batch_interval_seconds"] = max(0, batch_interval_seconds)
-        if int(attention.get("next_dispatch_at", 0) or 0) <= now:
-            attention["next_dispatch_at"] = now + max(0, batch_interval_seconds)
+        attention["next_dispatch_at"] = now + max(0, batch_interval_seconds)
         attention["updated_at"] = now
         self.data["active_group_attentions"][str(group_id)] = attention
         self.save()
@@ -275,6 +272,27 @@ class BridgeState:
             self.save()
             return None
         return attention
+
+    def group_attention_generation(self, group_id: str) -> int | None:
+        attention = self.active_group_attention(group_id)
+        if not attention:
+            return None
+        return int(attention.get("generation", 0) or 0)
+
+    def close_group_attention_if_generation(self, group_id: str, generation: int | None) -> bool:
+        if generation is None:
+            return False
+        attentions = self.data.get("active_group_attentions", {})
+        if not isinstance(attentions, dict):
+            return False
+        attention = attentions.get(str(group_id))
+        if not isinstance(attention, dict):
+            return False
+        if int(attention.get("generation", 0) or 0) != int(generation):
+            return False
+        attentions.pop(str(group_id), None)
+        self.save()
+        return True
 
     def ready_group_attention_groups(self) -> list[str]:
         attentions = self.data.get("active_group_attentions", {})
