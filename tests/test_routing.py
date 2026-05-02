@@ -292,6 +292,50 @@ async def test_group_attention_closes_when_agent_does_not_reply_or_extend(servic
 
 
 @pytest.mark.asyncio
+async def test_mention_interrupts_group_attention_and_discards_buffer(service: BridgeService) -> None:
+    service.settings.group_attention_batch_interval_seconds = 60
+    service.state.open_group_attention(
+        group_id="333",
+        ttl_seconds=service.settings.group_attention_ttl_seconds,
+        batch_interval_seconds=service.settings.group_attention_batch_interval_seconds,
+        max_batches=service.settings.group_attention_max_batches,
+        reason="agent_extend",
+    )
+    queued = await service.handle_event(
+        {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": 999,
+            "group_id": 333,
+            "user_id": 222,
+            "message_id": 29,
+            "message": "旧窗口里的补充",
+        }
+    )
+    mention = await service.handle_event(
+        {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": 999,
+            "group_id": 333,
+            "user_id": 444,
+            "message_id": 30,
+            "message": "桥桥 新问题看这里",
+        }
+    )
+    tick = await service.tick_group_attention()
+
+    assert queued["action"] == "queued"
+    assert mention["action"] == "agent_handoff"
+    assert mention["reason"] == "mention"
+    assert service.state.active_group_attention("333") is None
+    assert tick["groups"] == []
+    assert len(service.hermes.calls) == 1
+    assert "旧窗口里的补充" in service.hermes.calls[0]["user"]
+    assert "桥桥 新问题看这里" in service.hermes.calls[0]["user"]
+
+
+@pytest.mark.asyncio
 async def test_forget_resets_hermes_session(service: BridgeService) -> None:
     old_session = service.state.hermes_session_id("group:333")
     result = await service.handle_event(

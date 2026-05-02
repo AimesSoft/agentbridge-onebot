@@ -9,7 +9,7 @@ AgentBridge 是为梨花（NipaPlay / NipaPlay-Reload）社区维护场景开发
 ## 关键能力
 
 - 私聊、@bot、回复 bot、关键词会立即转交 Agent。
-- Agent 在群里实际发言后会打开群级注意力窗口，窗口内群聊会在安静一小段时间后打包交给 Agent 继续判断。
+- Agent 可主动调用工具打开群级注意力窗口，窗口内群聊会在固定时间后打包交给 Agent 继续判断。
 - 普通群聊可以进入 ambient 未读 buffer，由泊松式随机调度模拟“随机看手机”。
 - 群消息保存为 SQLite 索引和 JSONL 归档，Agent 需要长上下文时自己读文件。
 - release/deploy 等高风险 GitHub 操作走管理员硬命令，不交给 LLM 自由触发。

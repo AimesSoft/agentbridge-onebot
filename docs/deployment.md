@@ -110,7 +110,18 @@ groups:
 
 `autonomous_enabled` 只控制 ambient 自主看群。私聊、@bot、回复 bot 不受这个开关影响。
 
-群级注意力窗口由 `GROUP_ATTENTION_*` 控制：有人 @bot 或回复 bot 时会立即唤醒 Hermes；只有 Hermes 真的通过 QQ skill 发出群消息后，Bridge 才会让当前群进入短暂注意力状态。窗口内普通群消息只会入队，不会刷新倒计时；固定窗口结束后再打包交给 Hermes 判断要不要继续回复。关闭 ambient 时，这个机制仍然可用。
+群级注意力窗口由 `GROUP_ATTENTION_*` 控制：有人 @bot 或回复 bot 时会立即唤醒 Hermes，并打断当前群已有的注意力窗口。Bridge 不会因为 Hermes 发群消息就自动进入注意力状态；只有 Hermes 显式调用 `qq.extend_group_attention` 后，窗口内普通群消息才会入队。固定窗口结束后再打包交给 Hermes 判断要不要继续回复。关闭 ambient 时，这个机制仍然可用。
+
+注意力窗口参数含义：
+
+- `GROUP_ATTENTION_ENABLED`：是否启用 agent 主动保持注意力机制。
+- `GROUP_ATTENTION_BATCH_INTERVAL_SECONDS`：固定收集窗口时长。agent 调用 `qq.extend_group_attention` 后，Bridge 收集这段时间内的群消息，到点投喂 Hermes。
+- `GROUP_ATTENTION_TICK_SECONDS`：后台检查注意力窗口是否到期的频率。
+- `GROUP_ATTENTION_TTL_SECONDS`：注意力窗口安全过期时间，用于清理异常残留状态。
+- `GROUP_ATTENTION_MAX_BATCHES`：单个注意力窗口最多拆分投喂多少批，防止异常刷屏。
+- `GROUP_ATTENTION_MAX_BATCH_MESSAGES`：每批最多交给 Hermes 的消息数。
+- `GROUP_ATTENTION_MAX_BUFFER_MESSAGES`：窗口内最多缓存多少条消息。
+- `GROUP_ATTENTION_MAX_EXTENSION_SECONDS`：agent 单次调用 `qq.extend_group_attention` 能请求的最长观察时间。
 
 ## 5. 配置 NapCat
 
@@ -326,4 +337,4 @@ knowledge/
 
 ### @bot 后续追问看不到
 
-检查 `GROUP_ATTENTION_ENABLED=true`，并确认 Hermes 是通过 `qq.send_message` / `qq.reply_message` / `onebot-call send_group_msg` 发出的群消息。这个机制独立于 ambient：Agent 实际发言后会打开群级注意力窗口；后续群消息会在固定窗口内批量送给 Hermes，而不是要求群友每句话都重新 @。
+检查 `GROUP_ATTENTION_ENABLED=true`，并确认 Hermes 在回复后显式调用了 `qq.extend_group_attention`。这个机制独立于 ambient：Agent 主动保持注意力后，后续群消息会在固定窗口内批量送给 Hermes，而不是要求群友每句话都重新 @。

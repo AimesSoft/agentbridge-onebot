@@ -288,6 +288,16 @@ class BridgeState:
         self.save()
         return True
 
+    def clear_group_attention(self, group_id: str | None) -> bool:
+        if not group_id:
+            return False
+        attentions = self.data.get("active_group_attentions", {})
+        if not isinstance(attentions, dict) or str(group_id) not in attentions:
+            return False
+        attentions.pop(str(group_id), None)
+        self.save()
+        return True
+
     def ready_group_attention_groups(self) -> list[str]:
         attentions = self.data.get("active_group_attentions", {})
         if not isinstance(attentions, dict):

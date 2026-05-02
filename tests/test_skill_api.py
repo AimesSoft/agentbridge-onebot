@@ -117,11 +117,11 @@ async def test_reply_message_skill(tmp_path) -> None:
     assert response.json()["group_id"] == "123"
     assert napcat.sent[0]["message"][0] == {"type": "reply", "data": {"id": "42"}}
     assert state.is_reply_to_bot("123", "99")
-    assert state.active_group_attention("123") is not None
+    assert state.active_group_attention("123") is None
 
 
 @pytest.mark.asyncio
-async def test_send_message_skill_opens_group_attention(tmp_path) -> None:
+async def test_send_message_skill_does_not_open_group_attention(tmp_path) -> None:
     app, state, _, _ = make_client(tmp_path)
     run_id = create_run(state, group_id="123")
 
@@ -133,9 +133,7 @@ async def test_send_message_skill_opens_group_attention(tmp_path) -> None:
     )
 
     assert response.status_code == 200
-    attention = state.active_group_attention("123")
-    assert attention is not None
-    assert attention["reason"] == "qq.send_message"
+    assert state.active_group_attention("123") is None
 
 
 @pytest.mark.asyncio

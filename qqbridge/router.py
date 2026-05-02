@@ -88,6 +88,8 @@ class BridgeService:
         if not self.state.allow_user_llm(inbound.user_id, self.settings.user_rate_limit_per_minute):
             return {"ok": True, "action": "ignored", "reason": "rate_limited"}
 
+        if reason in {"mention", "reply_to_bot"}:
+            self.state.clear_group_attention(inbound.group_id)
         run = self._create_run_for_inbound(inbound, reason)
         log.info("[RUN] id=%s tools=%s", run.get("run_id"), run.get("allowed_tools"))
         user_content = self._with_run_context(self._build_user_content(inbound), run, inbound=inbound)
@@ -390,7 +392,7 @@ class BridgeService:
         return (
             f"QQ群号：{group_id}\n"
             f"场景：active_group_attention\n"
-            f"说明：你上次在群里发言后，Bridge 为这个群打开了短时注意力窗口。"
+            f"说明：你主动调用 qq.extend_group_attention 后，Bridge 为这个群打开了短时注意力窗口。"
             f"下面是倒计时内攒下的一批新消息，不是随机 ambient。\n"
             f"群聊消息归档 JSONL 路径：\n{archive_paths}\n\n"
             f"最近群聊：\n" + "\n".join(recent_lines) + "\n\n"

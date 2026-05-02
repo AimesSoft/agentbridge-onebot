@@ -118,7 +118,7 @@ POST /skills/qq/extend_group_attention
 {"run_id": "<run_id>", "group_id": "123", "seconds": 60, "reason": "wait for logs"}
 ```
 
-After you send a group message, AgentBridge automatically opens a short group attention window. If an active attention batch does not need an immediate reply but should keep listening for more context, call `extend_group_attention`.
+AgentBridge does not automatically keep listening after you send a group message. If you want to see follow-up reactions, call `extend_group_attention` explicitly. A later mention/reply will interrupt and replace any active attention window.
 
 ### Group Tools
 

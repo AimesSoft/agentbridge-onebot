@@ -115,34 +115,28 @@ def build_skill_router(
     async def onebot_call(payload: OneBotCallRequest, request: Request) -> dict[str, Any]:
         _verify_skill_token(request, settings)
         group_id = _group_id_from_params(payload.params)
-        run = _authorize(state, run_id=payload.run_id, tool=cap.ONEBOT_CALL, group_id=group_id)
+        _authorize(state, run_id=payload.run_id, tool=cap.ONEBOT_CALL, group_id=group_id)
         _authorize_onebot_action(settings, payload.action)
         data = await napcat.call(payload.action, payload.params)
         message_id = _response_message_id(data)
         if group_id and payload.action in cap.ONEBOT_CHAT_ACTIONS:
             _after_agent_group_message(
                 state=state,
-                settings=settings,
-                run=run,
                 group_id=group_id,
                 message_id=message_id,
-                reason=f"onebot:{payload.action}",
             )
         return {"ok": True, "action": payload.action, "data": data.get("data", data)}
 
     @router.post("/qq/send_message")
     async def qq_send_message(payload: SendMessageRequest, request: Request) -> dict[str, Any]:
         _verify_skill_token(request, settings)
-        run = _authorize(state, run_id=payload.run_id, tool=cap.QQ_SEND_MESSAGE, group_id=payload.group_id)
+        _authorize(state, run_id=payload.run_id, tool=cap.QQ_SEND_MESSAGE, group_id=payload.group_id)
         data = await napcat.send_msg(message_type="group", group_id=payload.group_id, message=payload.text)
         message_id = _response_message_id(data)
         _after_agent_group_message(
             state=state,
-            settings=settings,
-            run=run,
             group_id=payload.group_id,
             message_id=message_id,
-            reason="qq.send_message",
         )
         return {"ok": True, "message_id": message_id}
 
@@ -160,7 +154,7 @@ def build_skill_router(
         if not source or not source.get("group_id"):
             raise HTTPException(status_code=404, detail="message_id not found in bridge state")
         group_id = str(source["group_id"])
-        run = _authorize(state, run_id=payload.run_id, tool=cap.QQ_REPLY_MESSAGE, group_id=group_id)
+        _authorize(state, run_id=payload.run_id, tool=cap.QQ_REPLY_MESSAGE, group_id=group_id)
         data = await napcat.send_msg(
             message_type="group",
             group_id=group_id,
@@ -172,18 +166,15 @@ def build_skill_router(
         message_id = _response_message_id(data)
         _after_agent_group_message(
             state=state,
-            settings=settings,
-            run=run,
             group_id=group_id,
             message_id=message_id,
-            reason="qq.reply_message",
         )
         return {"ok": True, "group_id": group_id, "message_id": message_id}
 
     @router.post("/qq/send_face")
     async def qq_send_face(payload: SendFaceRequest, request: Request) -> dict[str, Any]:
         _verify_skill_token(request, settings)
-        run = _authorize(state, run_id=payload.run_id, tool=cap.QQ_SEND_FACE, group_id=payload.group_id)
+        _authorize(state, run_id=payload.run_id, tool=cap.QQ_SEND_FACE, group_id=payload.group_id)
         data = await napcat.send_msg(
             message_type="group",
             group_id=payload.group_id,
@@ -192,11 +183,8 @@ def build_skill_router(
         message_id = _response_message_id(data)
         _after_agent_group_message(
             state=state,
-            settings=settings,
-            run=run,
             group_id=payload.group_id,
             message_id=message_id,
-            reason="qq.send_face",
         )
         return {"ok": True, "message_id": message_id}
 
@@ -340,26 +328,12 @@ def _authorize_onebot_action(settings: Settings, action: str) -> None:
 def _after_agent_group_message(
     *,
     state: BridgeState,
-    settings: Settings,
-    run: dict[str, Any],
     group_id: str,
     message_id: str | None,
-    reason: str,
 ) -> None:
     if message_id:
         state.add_bot_message_id(group_id, message_id)
     state.mark_group_replied(group_id)
-    if not settings.group_attention_enabled:
-        return
-    state.open_group_attention(
-        group_id=group_id,
-        ttl_seconds=settings.group_attention_ttl_seconds,
-        batch_interval_seconds=settings.group_attention_batch_interval_seconds,
-        max_batches=settings.group_attention_max_batches,
-        reason=reason,
-        trigger_user_id=run.get("user_id"),
-        trigger_message_id=run.get("trigger_message_id"),
-    )
 
 
 def _group_id_from_params(params: dict[str, Any]) -> str | None:
