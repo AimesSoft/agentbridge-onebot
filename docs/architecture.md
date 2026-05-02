@@ -140,6 +140,24 @@ tool_calls
 
 这不是完整沙箱，而是一个实用的防误触边界。默认假设 Hermes 是可信的 NipaPlay maintainer agent。
 
+## Hermes Session 生命周期
+
+Bridge 不维护 LLM 对话历史，调用 Hermes 时只发送当前 handoff 包和 `X-Hermes-Session-Id`。Hermes 自己维护 session 上下文；Bridge 负责控制 session 不无限增长。
+
+每条 QQ 对话线使用稳定 key：
+
+```text
+group:<group_id>
+private:<user_id>
+```
+
+Bridge 会在下一次 handoff 前检查 session：
+
+- 超过 `HERMES_SESSION_MAX_AGE_SECONDS`，默认 3 天。
+- 或超过 `HERMES_SESSION_MAX_HANDOFFS`，默认 200 次。
+
+任一条件达到就切换到新的 Hermes session id。消息记录不会丢失，因为原始消息仍保存在 SQLite 和 JSONL 归档中，新的 session 仍会拿到最近上下文和归档路径。
+
 ## OneBot 分级
 
 `SKILL_ONEBOT_LEVEL` 控制 `onebot.call` 能调用哪些 OneBot action：

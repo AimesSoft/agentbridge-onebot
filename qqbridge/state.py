@@ -403,8 +403,54 @@ class BridgeState:
             generations = {}
             self.data["hermes_session_generations"] = generations
         generations[conversation_key] = int(generations.get(conversation_key, 0) or 0) + 1
+        meta = self.data.setdefault("hermes_session_meta", {})
+        if not isinstance(meta, dict):
+            meta = {}
+            self.data["hermes_session_meta"] = meta
+        now = int(time.time())
+        meta[conversation_key] = {"created_at": now, "last_used_at": 0, "handoffs": 0}
         self.save()
         return self.hermes_session_id(conversation_key)
+
+    def rollover_hermes_session_if_needed(
+        self,
+        conversation_key: str,
+        *,
+        max_age_seconds: int,
+        max_handoffs: int,
+    ) -> bool:
+        meta = self.data.setdefault("hermes_session_meta", {})
+        if not isinstance(meta, dict):
+            meta = {}
+            self.data["hermes_session_meta"] = meta
+        now = int(time.time())
+        current = meta.get(conversation_key)
+        if not isinstance(current, dict):
+            meta[conversation_key] = {"created_at": now, "last_used_at": 0, "handoffs": 0}
+            self.save()
+            return False
+        created_at = int(current.get("created_at", now) or now)
+        handoffs = int(current.get("handoffs", 0) or 0)
+        too_old = max_age_seconds > 0 and now - created_at >= max_age_seconds
+        too_many = max_handoffs > 0 and handoffs >= max_handoffs
+        if not (too_old or too_many):
+            return False
+        self.reset_hermes_session(conversation_key)
+        return True
+
+    def record_hermes_handoff(self, conversation_key: str) -> None:
+        meta = self.data.setdefault("hermes_session_meta", {})
+        if not isinstance(meta, dict):
+            meta = {}
+            self.data["hermes_session_meta"] = meta
+        now = int(time.time())
+        current = meta.get(conversation_key)
+        if not isinstance(current, dict):
+            current = {"created_at": now, "last_used_at": 0, "handoffs": 0}
+        current["last_used_at"] = now
+        current["handoffs"] = int(current.get("handoffs", 0) or 0) + 1
+        meta[conversation_key] = current
+        self.save()
 
     def create_agent_run(
         self,
@@ -497,6 +543,7 @@ class BridgeState:
             "agent_runs": {},
             "runtime_settings": {},
             "hermes_session_generations": {},
+            "hermes_session_meta": {},
             "active_group_attentions": {},
         }
         if not self.path.exists():

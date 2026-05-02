@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     hermes_model: str = "hermes-agent"
     hermes_api_key: str | None = None
     hermes_timeout_seconds: float = 120
+    hermes_session_max_age_seconds: int = 259_200
+    hermes_session_max_handoffs: int = 200
 
     bot_qq_id: str | None = None
     bot_names: list[str] = Field(default_factory=lambda: ["bridge", "agent", "bot"])

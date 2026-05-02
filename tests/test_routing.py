@@ -164,6 +164,37 @@ async def test_group_llm_uses_hermes_group_session(service: BridgeService) -> No
 
 
 @pytest.mark.asyncio
+async def test_hermes_session_rolls_over_after_handoff_limit(service: BridgeService) -> None:
+    service.settings.hermes_session_max_handoffs = 1
+    await service.handle_event(
+        {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": 999,
+            "group_id": 333,
+            "user_id": 222,
+            "message_id": 35,
+            "message": "桥桥 第一次",
+        }
+    )
+    first_session = service.hermes.calls[0]["session_id"]
+
+    await service.handle_event(
+        {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": 999,
+            "group_id": 333,
+            "user_id": 222,
+            "message_id": 36,
+            "message": "桥桥 第二次",
+        }
+    )
+
+    assert service.hermes.calls[1]["session_id"] != first_session
+
+
+@pytest.mark.asyncio
 async def test_mention_does_not_open_group_attention_until_agent_sends(service: BridgeService) -> None:
     service.settings.group_attention_batch_interval_seconds = 0
     first = await service.handle_event(

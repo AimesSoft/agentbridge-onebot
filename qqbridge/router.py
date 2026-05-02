@@ -94,9 +94,10 @@ class BridgeService:
         log.info("[RUN] id=%s tools=%s", run.get("run_id"), run.get("allowed_tools"))
         user_content = self._with_run_context(self._build_user_content(inbound), run, inbound=inbound)
         conversation_key = self._conversation_key(inbound)
-        session_id = self.state.hermes_session_id(conversation_key)
+        session_id = self._hermes_session_id(conversation_key)
         log.info("[LLM] calling hermes session=%s", session_id)
         answer = await self.hermes.chat(prompt, [], user_content, session_id=session_id)
+        self.state.record_hermes_handoff(conversation_key)
         log.info("[LLM] answer=%r", answer[:200])
         if allow_skip and is_skip_response(answer):
             if inbound.group_id:
@@ -240,13 +241,15 @@ class BridgeService:
             max_tool_calls=20,
         )
         user_content = self._with_run_context(self._build_ambient_content(group_id, unread), run)
-        session_id = self.state.hermes_session_id(f"group:{group_id}")
+        conversation_key = f"group:{group_id}"
+        session_id = self._hermes_session_id(conversation_key)
         answer = await self.hermes.chat(
             with_persona(AMBIENT_GROUP_PROMPT, self.settings.bot_persona),
             [],
             user_content,
             session_id=session_id,
         )
+        self.state.record_hermes_handoff(conversation_key)
         plan = parse_agent_plan(answer)
         if plan.should_skip:
             self.state.clear_unread_group_messages(group_id)
@@ -269,13 +272,15 @@ class BridgeService:
             max_tool_calls=20,
         )
         user_content = self._with_run_context(self._build_group_attention_content(group_id, batch), run)
-        session_id = self.state.hermes_session_id(f"group:{group_id}")
+        conversation_key = f"group:{group_id}"
+        session_id = self._hermes_session_id(conversation_key)
         answer = await self.hermes.chat(
             with_persona(GROUP_ATTENTION_PROMPT, self.settings.bot_persona),
             [],
             user_content,
             session_id=session_id,
         )
+        self.state.record_hermes_handoff(conversation_key)
         plan = parse_agent_plan(answer)
         if plan.should_skip:
             self.state.remove_unread_group_messages(group_id, [str(item.get("message_id")) for item in batch])
@@ -307,6 +312,14 @@ class BridgeService:
         if inbound.group_id:
             return f"group:{inbound.group_id}"
         return inbound.conversation_key
+
+    def _hermes_session_id(self, conversation_key: str) -> str:
+        self.state.rollover_hermes_session_if_needed(
+            conversation_key,
+            max_age_seconds=self.settings.hermes_session_max_age_seconds,
+            max_handoffs=self.settings.hermes_session_max_handoffs,
+        )
+        return self.state.hermes_session_id(conversation_key)
 
     def _with_run_context(self, content: str, run: dict[str, Any], inbound=None) -> str:
         tools = ", ".join(run.get("allowed_tools", []))

@@ -39,6 +39,8 @@ QQBRIDGE_SKILL_TOKEN=<随机 skill token，必须和 Hermes skill 一致>
 NAPCAT_BASE_URL=http://127.0.0.1:3000
 HERMES_BASE_URL=http://127.0.0.1:8642
 HERMES_MODEL=hermes-agent
+HERMES_SESSION_MAX_AGE_SECONDS=259200
+HERMES_SESSION_MAX_HANDOFFS=200
 
 BOT_QQ_ID=<机器人 QQ 号>
 BOT_NAMES=梨花,AgentBridge,bot
@@ -68,6 +70,13 @@ PY
 ```
 
 如果 NapCat 和 AgentBridge 在同机运行，建议 `QQBRIDGE_HOST=127.0.0.1`。如果要暴露到公网，请放在 HTTPS 反向代理后面。
+
+Hermes session 生命周期参数：
+
+- `HERMES_SESSION_MAX_AGE_SECONDS`：同一 QQ 对话线的 Hermes session 最长保留时间。默认 `259200`，也就是 3 天。
+- `HERMES_SESSION_MAX_HANDOFFS`：同一 session 最多承载多少次 handoff。默认 `200`，防止活跃群在 3 天内堆出很长上下文。
+
+任一条件达到后，AgentBridge 会在下一次调用 Hermes 前换一个新的 `X-Hermes-Session-Id`。这不会删除 SQLite/JSONL 消息归档，只是让 Hermes 从新的短上下文 session 开始。
 
 ## 4. 配置 `config.yaml`
 
