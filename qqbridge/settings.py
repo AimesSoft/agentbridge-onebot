@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     ambient_jitter_min_seconds: int = 300
     ambient_jitter_max_seconds: int = 10800
     agent_run_ttl_seconds: int = 900
+    group_attention_enabled: bool = True
+    group_attention_ttl_seconds: int = 180
+    group_attention_batch_interval_seconds: int = 8
+    group_attention_tick_seconds: int = 1
+    group_attention_max_batches: int = 8
+    group_attention_max_batch_messages: int = 20
+    group_attention_max_buffer_messages: int = 80
     skill_onebot_level: str = "group_admin"
 
     max_history_messages: int = 16
@@ -85,6 +92,14 @@ class Settings(BaseSettings):
             lower = key.lower()
             if lower != key and lower not in normalized:
                 normalized[lower] = normalized[key]
+        aliases = {
+            "group_dialogue_followup_enabled": "group_attention_enabled",
+            "group_dialogue_followup_ttl_seconds": "group_attention_ttl_seconds",
+            "group_dialogue_followup_max_messages": "group_attention_max_batches",
+        }
+        for old_key, new_key in aliases.items():
+            if old_key in normalized and new_key not in normalized:
+                normalized[new_key] = normalized[old_key]
         return normalized
 
     @field_validator("bot_names", "admin_qq_ids", mode="before")

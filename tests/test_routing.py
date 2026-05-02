@@ -164,6 +164,88 @@ async def test_group_llm_uses_hermes_group_session(service: BridgeService) -> No
 
 
 @pytest.mark.asyncio
+async def test_mention_opens_group_attention_window(service: BridgeService) -> None:
+    service.settings.group_attention_batch_interval_seconds = 0
+    first = await service.handle_event(
+        {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": 999,
+            "group_id": 333,
+            "user_id": 222,
+            "message_id": 22,
+            "message": "桥桥 你怎么看？",
+        }
+    )
+    second = await service.handle_event(
+        {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": 999,
+            "group_id": 333,
+            "user_id": 222,
+            "message_id": 23,
+            "message": "快点说",
+        }
+    )
+    tick = await service.tick_group_attention()
+
+    assert first["reason"] == "mention"
+    assert second["action"] == "queued"
+    assert second["reason"] == "active_group_attention"
+    assert tick["groups"][0]["action"] == "agent_handoff"
+    assert len(service.hermes.calls) == 2
+    assert "active_group_attention" in service.hermes.calls[1]["user"]
+    assert "快点说" in service.hermes.calls[1]["user"]
+
+
+@pytest.mark.asyncio
+async def test_group_attention_batches_messages_from_the_whole_group(service: BridgeService) -> None:
+    service.settings.group_attention_batch_interval_seconds = 0
+    await service.handle_event(
+        {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": 999,
+            "group_id": 333,
+            "user_id": 222,
+            "message_id": 24,
+            "message": "桥桥 你怎么看？",
+        }
+    )
+    first_followup = await service.handle_event(
+        {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": 999,
+            "group_id": 333,
+            "user_id": 444,
+            "message_id": 25,
+            "message": "我插一句",
+        }
+    )
+    second_followup = await service.handle_event(
+        {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": 999,
+            "group_id": 333,
+            "user_id": 222,
+            "message_id": 26,
+            "message": "那你快说",
+        }
+    )
+    tick = await service.tick_group_attention()
+
+    assert first_followup["action"] == "queued"
+    assert second_followup["action"] == "queued"
+    assert tick["groups"][0]["messages"] == 2
+    assert len(service.hermes.calls) == 2
+    assert "我插一句" in service.hermes.calls[1]["user"]
+    assert "那你快说" in service.hermes.calls[1]["user"]
+
+
+@pytest.mark.asyncio
 async def test_forget_resets_hermes_session(service: BridgeService) -> None:
     old_session = service.state.hermes_session_id("group:333")
     result = await service.handle_event(

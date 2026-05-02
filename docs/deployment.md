@@ -49,6 +49,11 @@ GITHUB_OWNER=AimesSoft
 GITHUB_REPO=NipaPlay-Reload
 GITHUB_RELEASE_WORKFLOW=release.yml
 GITHUB_DEPLOY_WORKFLOW=deploy.yml
+
+GROUP_ATTENTION_ENABLED=true
+GROUP_ATTENTION_TTL_SECONDS=180
+GROUP_ATTENTION_BATCH_INTERVAL_SECONDS=8
+GROUP_ATTENTION_MAX_BATCHES=8
 ```
 
 生成随机 token：
@@ -103,6 +108,8 @@ groups:
 ```
 
 `autonomous_enabled` 只控制 ambient 自主看群。私聊、@bot、回复 bot 不受这个开关影响。
+
+群级注意力窗口由 `GROUP_ATTENTION_*` 控制：当有人 @bot 或回复 bot 后，Bridge 会让当前群进入短暂注意力状态；窗口内普通群消息先攒成小批次，再交给 Hermes 判断要不要继续回复。关闭 ambient 时，这个机制仍然可用。
 
 ## 5. 配置 NapCat
 
@@ -315,3 +322,7 @@ knowledge/
 - 是否有未读消息进入 buffer。
 - cooldown 是否过长。
 - Hermes 是否返回了 skip。
+
+### @bot 后续追问看不到
+
+检查 `GROUP_ATTENTION_ENABLED=true`。这个机制独立于 ambient：@bot / 回复 bot 会先立即唤醒 Hermes，同时打开群级注意力窗口；后续几秒内的群消息会被批量送给 Hermes，而不是要求群友每句话都重新 @。

@@ -55,6 +55,15 @@ handoff 层决定何时调用 Hermes，以及如何构造上下文包。
 - 回复 bot 之前的消息。
 - 命中配置关键词。
 
+群级注意力窗口：
+
+- @bot 或回复 bot 后，Bridge 会为当前群打开一个短时注意力窗口。
+- 窗口内的普通群消息不会逐条调用 Hermes，而是先进入 active group attention buffer。
+- 后台轻量 tick 会每隔 `GROUP_ATTENTION_BATCH_INTERVAL_SECONDS` 左右把攒下的小批消息交给 Hermes。
+- 每条窗口内新消息都会刷新倒计时，让对话在真实活跃时自然持续。
+- 窗口受 `GROUP_ATTENTION_TTL_SECONDS`、`GROUP_ATTENTION_MAX_BATCHES` 和 buffer 上限约束，避免无限续命。
+- prompt 会明确告诉 Hermes：这是被 @ 后的群聊续场，不是 ambient 随机看群。
+
 ambient 触发：
 
 - 普通群聊先进入 unread buffer。
@@ -70,6 +79,7 @@ Bridge 持久化这些内容：
 
 - 私聊和即时对话的短历史。
 - 群最近消息窗口。
+- 群级注意力窗口和待投喂批次。
 - ambient 未读 buffer。
 - bot 最近发出的 message_id，用于识别“回复 bot”。
 - 群配置覆盖：自主互动开关、cooldown、关键词。
@@ -160,6 +170,24 @@ Hermes 调用 qq.reply_message 或 onebot.call
 AgentBridge 校验 run 和目标
   ↓
 NapCat send_msg
+```
+
+### 被叫住后的群聊续场
+
+```text
+@bot / 回复 bot
+  ↓
+立即 handoff，并打开群级注意力窗口
+  ↓
+窗口内普通群消息
+  ↓
+只入队，不逐条调用 Hermes
+  ↓
+短间隔 tick 打包新消息
+  ↓
+创建 active_dialogue agent_run
+  ↓
+Hermes 判断继续回复或 SKIP
 ```
 
 ### Ambient 随机看群

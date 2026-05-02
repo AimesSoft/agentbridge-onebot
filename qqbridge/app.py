@@ -42,6 +42,7 @@ def create_app() -> FastAPI:
     app.state.service = service
     app.state.store = store
     app.state.ambient_task = None
+    app.state.group_attention_task = None
     app.include_router(
         build_skill_router(settings=settings, config=config, state=state, store=store, napcat=napcat, github=github)
     )
@@ -68,6 +69,11 @@ def create_app() -> FastAPI:
         _verify_webhook_token(request, settings)
         return await service.tick_ambient()
 
+    @app.post("/group-attention/tick")
+    async def group_attention_tick(request: Request) -> dict[str, Any]:
+        _verify_webhook_token(request, settings)
+        return await service.tick_group_attention()
+
     app.router.add_event_handler("startup", _make_startup(app, service, settings))
     app.router.add_event_handler("shutdown", _make_shutdown(app))
 
@@ -92,6 +98,13 @@ async def _ambient_loop(service: BridgeService, settings: Settings) -> None:
             await service.tick_ambient()
 
 
+async def _group_attention_loop(service: BridgeService, settings: Settings) -> None:
+    while True:
+        await asyncio.sleep(max(0.2, settings.group_attention_tick_seconds))
+        with suppress(Exception):
+            await service.tick_group_attention()
+
+
 def _next_ambient_delay(settings: Settings) -> float:
     mean = max(30, settings.ambient_interval_seconds)
     delay = random.expovariate(1 / mean)
@@ -102,6 +115,8 @@ def _make_startup(app: FastAPI, service: BridgeService, settings: Settings):
     async def startup() -> None:
         if settings.ambient_enabled:
             app.state.ambient_task = asyncio.create_task(_ambient_loop(service, settings))
+        if settings.group_attention_enabled:
+            app.state.group_attention_task = asyncio.create_task(_group_attention_loop(service, settings))
 
     return startup
 
@@ -113,5 +128,10 @@ def _make_shutdown(app: FastAPI):
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+        attention_task = app.state.group_attention_task
+        if attention_task:
+            attention_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await attention_task
 
     return shutdown

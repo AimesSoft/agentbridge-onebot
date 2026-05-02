@@ -123,6 +123,18 @@ class BridgeState:
         self.data["ambient_unread_group_messages"][group_id] = []
         self.save()
 
+    def remove_unread_group_messages(self, group_id: str, message_ids: list[str | None]) -> None:
+        targets = {str(message_id) for message_id in message_ids if message_id is not None}
+        if not targets:
+            return
+        messages = self.data["ambient_unread_group_messages"].get(group_id, [])
+        if not isinstance(messages, list):
+            return
+        self.data["ambient_unread_group_messages"][group_id] = [
+            message for message in messages if str(message.get("message_id", "")) not in targets
+        ]
+        self.save()
+
     def add_bot_message_id(self, group_id: str | None, message_id: str) -> None:
         if not group_id or not message_id:
             return
@@ -166,6 +178,175 @@ class BridgeState:
     def mark_group_replied(self, group_id: str) -> None:
         self.data["group_reply_times"][group_id] = time.time()
         self.save()
+
+    def open_group_attention(
+        self,
+        *,
+        group_id: str,
+        ttl_seconds: int,
+        batch_interval_seconds: int,
+        max_batches: int,
+        reason: str,
+        trigger_user_id: str | None = None,
+        trigger_message_id: str | None = None,
+    ) -> None:
+        if ttl_seconds <= 0 or max_batches <= 0:
+            return
+        attentions = self.data.setdefault("active_group_attentions", {})
+        if not isinstance(attentions, dict):
+            attentions = {}
+            self.data["active_group_attentions"] = attentions
+        now = int(time.time())
+        current = attentions.get(str(group_id))
+        buffer = current.get("buffer", []) if isinstance(current, dict) and isinstance(current.get("buffer"), list) else []
+        next_dispatch_at = (
+            int(current.get("next_dispatch_at", 0))
+            if isinstance(current, dict) and current.get("next_dispatch_at") is not None
+            else 0
+        )
+        attentions[str(group_id)] = {
+            "group_id": str(group_id),
+            "trigger_user_id": str(trigger_user_id) if trigger_user_id else None,
+            "trigger_message_id": str(trigger_message_id) if trigger_message_id else None,
+            "expires_at": now + ttl_seconds,
+            "remaining_batches": max_batches,
+            "batch_interval_seconds": max(0, batch_interval_seconds),
+            "next_dispatch_at": next_dispatch_at,
+            "reason": reason,
+            "buffer": buffer,
+            "updated_at": now,
+        }
+        self.save()
+
+    def queue_group_attention_message(
+        self,
+        *,
+        group_id: str | None,
+        user_id: str,
+        sender: str,
+        text: str,
+        message_id: str | None,
+        ttl_seconds: int,
+        batch_interval_seconds: int,
+        max_buffer_messages: int,
+    ) -> bool:
+        if not group_id or not text.strip():
+            return False
+        attention = self.active_group_attention(group_id)
+        if not attention:
+            return False
+        message = {
+            "message_id": str(message_id or ""),
+            "sender": sender,
+            "user_id": str(user_id),
+            "text": text.strip(),
+            "ts": int(time.time()),
+        }
+        buffer = attention.setdefault("buffer", [])
+        if not isinstance(buffer, list):
+            buffer = []
+            attention["buffer"] = buffer
+        buffer.append(message)
+        attention["buffer"] = buffer[-max(1, max_buffer_messages):]
+        now = int(time.time())
+        attention["expires_at"] = now + max(1, ttl_seconds)
+        attention["batch_interval_seconds"] = max(0, batch_interval_seconds)
+        if int(attention.get("next_dispatch_at", 0) or 0) <= now:
+            attention["next_dispatch_at"] = now + max(0, batch_interval_seconds)
+        attention["updated_at"] = now
+        self.data["active_group_attentions"][str(group_id)] = attention
+        self.save()
+        return True
+
+    def active_group_attention(self, group_id: str | None) -> dict[str, Any] | None:
+        if not group_id:
+            return None
+        attentions = self.data.setdefault("active_group_attentions", {})
+        if not isinstance(attentions, dict):
+            self.data["active_group_attentions"] = {}
+            self.save()
+            return None
+        attention = attentions.get(str(group_id))
+        if not isinstance(attention, dict):
+            return None
+        now = int(time.time())
+        if int(attention.get("expires_at", 0) or 0) < now or int(attention.get("remaining_batches", 0) or 0) <= 0:
+            attentions.pop(str(group_id), None)
+            self.save()
+            return None
+        return attention
+
+    def ready_group_attention_groups(self) -> list[str]:
+        attentions = self.data.get("active_group_attentions", {})
+        if not isinstance(attentions, dict):
+            return []
+        now = int(time.time())
+        ready: list[str] = []
+        changed = False
+        for group_id, attention in list(attentions.items()):
+            if not isinstance(attention, dict):
+                attentions.pop(group_id, None)
+                changed = True
+                continue
+            if int(attention.get("expires_at", 0) or 0) < now or int(attention.get("remaining_batches", 0) or 0) <= 0:
+                attentions.pop(group_id, None)
+                changed = True
+                continue
+            buffer = attention.get("buffer", [])
+            if isinstance(buffer, list) and buffer and int(attention.get("next_dispatch_at", 0) or 0) <= now:
+                ready.append(str(group_id))
+        if changed:
+            self.save()
+        return ready
+
+    def pop_group_attention_batch(
+        self,
+        group_id: str,
+        *,
+        max_batch_messages: int,
+        batch_interval_seconds: int,
+    ) -> list[dict[str, Any]]:
+        attention = self.active_group_attention(group_id)
+        if not attention:
+            return []
+        buffer = attention.get("buffer", [])
+        if not isinstance(buffer, list) or not buffer:
+            return []
+        now = int(time.time())
+        if int(attention.get("next_dispatch_at", 0) or 0) > now:
+            return []
+        batch_size = max(1, max_batch_messages)
+        batch = list(buffer[:batch_size])
+        remaining = list(buffer[batch_size:])
+        attention["buffer"] = remaining
+        attention["remaining_batches"] = int(attention.get("remaining_batches", 0) or 0) - 1
+        attention["last_dispatch_at"] = now
+        if remaining and int(attention.get("remaining_batches", 0) or 0) > 0:
+            attention["next_dispatch_at"] = now + max(0, batch_interval_seconds)
+        else:
+            attention["next_dispatch_at"] = 0
+        if int(attention.get("remaining_batches", 0) or 0) <= 0:
+            self.data["active_group_attentions"].pop(str(group_id), None)
+        else:
+            self.data["active_group_attentions"][str(group_id)] = attention
+        self.save()
+        return batch
+
+    def requeue_group_attention_batch(self, group_id: str, batch: list[dict[str, Any]]) -> None:
+        if not batch:
+            return
+        attention = self.active_group_attention(group_id)
+        if not attention:
+            return
+        buffer = attention.get("buffer", [])
+        if not isinstance(buffer, list):
+            buffer = []
+        attention["buffer"] = list(batch) + buffer
+        attention["next_dispatch_at"] = int(time.time()) + max(1, int(attention.get("batch_interval_seconds", 1) or 1))
+        attention["remaining_batches"] = int(attention.get("remaining_batches", 0) or 0) + 1
+        self.data["active_group_attentions"][str(group_id)] = attention
+        self.save()
+
 
     def runtime_setting(self, key: str, default: str | None = None) -> str | None:
         settings = self.data.get("runtime_settings", {})
@@ -294,6 +475,7 @@ class BridgeState:
             "agent_runs": {},
             "runtime_settings": {},
             "hermes_session_generations": {},
+            "active_group_attentions": {},
         }
         if not self.path.exists():
             return default

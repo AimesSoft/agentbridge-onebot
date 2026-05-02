@@ -8,7 +8,14 @@ from .clients import GitHubClient, HermesClient, NapCatClient
 from .commands import CommandContext, CommandRegistry
 from .message_store import MessageStore
 from .models import InboundMessage, keyword_hit, mentions_bot, parse_inbound_message, reply_ids
-from .prompts import AMBIENT_GROUP_PROMPT, GROUP_KEYWORD_PROMPT, GROUP_MENTION_PROMPT, PRIVATE_PROMPT, with_persona
+from .prompts import (
+    AMBIENT_GROUP_PROMPT,
+    GROUP_ATTENTION_PROMPT,
+    GROUP_KEYWORD_PROMPT,
+    GROUP_MENTION_PROMPT,
+    PRIVATE_PROMPT,
+    with_persona,
+)
 from .settings import BridgeConfig, Settings
 from .state import BridgeState
 from .text import is_skip_response, split_qq_message
@@ -71,6 +78,9 @@ class BridgeService:
 
         route = self._route_llm(inbound)
         if route is None:
+            if self._queue_group_attention_if_active(inbound):
+                log.info("[ROUTE] queued active group attention group=%s", inbound.group_id)
+                return {"ok": True, "action": "queued", "reason": "active_group_attention"}
             log.info("[ROUTE] no LLM route for type=%s group=%s", inbound.message_type, inbound.group_id)
             return {"ok": True, "action": "ignored", "reason": "no_route"}
         prompt, allow_skip, reason = route
@@ -78,6 +88,7 @@ class BridgeService:
         if not self.state.allow_user_llm(inbound.user_id, self.settings.user_rate_limit_per_minute):
             return {"ok": True, "action": "ignored", "reason": "rate_limited"}
 
+        self._open_group_attention_if_needed(inbound, reason)
         run = self._create_run_for_inbound(inbound, reason)
         log.info("[RUN] id=%s tools=%s", run.get("run_id"), run.get("allowed_tools"))
         user_content = self._with_run_context(self._build_user_content(inbound), run, inbound=inbound)
@@ -87,11 +98,14 @@ class BridgeService:
         answer = await self.hermes.chat(prompt, [], user_content, session_id=session_id)
         log.info("[LLM] answer=%r", answer[:200])
         if allow_skip and is_skip_response(answer):
+            if inbound.group_id:
+                self.state.remove_unread_group_messages(inbound.group_id, [inbound.message_id])
             return {"ok": True, "action": "skipped", "reason": reason}
 
         # Agent sends messages via tools (qq.send_message etc.), not through bridge auto-send.
         # Response text is for logging/decision only.
         if inbound.group_id:
+            self.state.remove_unread_group_messages(inbound.group_id, [inbound.message_id])
             self.state.mark_group_replied(inbound.group_id)
         return {"ok": True, "action": "agent_handoff", "reason": reason}
 
@@ -114,6 +128,8 @@ class BridgeService:
             napcat=self.napcat,
         )
         result = await self.commands.dispatch(inbound.plain_text, ctx)
+        if inbound.group_id:
+            self.state.remove_unread_group_messages(inbound.group_id, [inbound.message_id])
         if result is None:
             return {"ok": True, "action": "ignored", "reason": "unknown_or_unauthorized_command"}
         if result.private and inbound.is_group:
@@ -141,6 +157,35 @@ class BridgeService:
             return with_persona(GROUP_KEYWORD_PROMPT, self.settings.bot_persona), True, f"keyword:{hit}"
 
         return None
+
+    def _open_group_attention_if_needed(self, inbound: InboundMessage, reason: str) -> None:
+        if not self.settings.group_attention_enabled or not inbound.group_id:
+            return
+        if reason not in {"mention", "reply_to_bot"}:
+            return
+        self.state.open_group_attention(
+            group_id=inbound.group_id,
+            ttl_seconds=self.settings.group_attention_ttl_seconds,
+            batch_interval_seconds=self.settings.group_attention_batch_interval_seconds,
+            max_batches=self.settings.group_attention_max_batches,
+            reason=reason,
+            trigger_user_id=inbound.user_id,
+            trigger_message_id=inbound.message_id,
+        )
+
+    def _queue_group_attention_if_active(self, inbound: InboundMessage) -> bool:
+        if not self.settings.group_attention_enabled or not inbound.group_id:
+            return False
+        return self.state.queue_group_attention_message(
+            group_id=inbound.group_id,
+            user_id=inbound.user_id,
+            sender=inbound.sender_name,
+            text=inbound.plain_text,
+            message_id=inbound.message_id,
+            ttl_seconds=self.settings.group_attention_ttl_seconds,
+            batch_interval_seconds=self.settings.group_attention_batch_interval_seconds,
+            max_buffer_messages=self.settings.group_attention_max_buffer_messages,
+        )
 
     def _persist_inbound(self, inbound: InboundMessage) -> None:
         self.store.add_message(
@@ -170,11 +215,34 @@ class BridgeService:
             group_config = self.state.effective_group_config(group_id, base)
             if not group_config.autonomous_enabled:
                 continue
+            if self.state.active_group_attention(group_id):
+                continue
             if not self.state.can_group_autoreply_now(group_id, group_config.min_seconds_between_replies):
                 continue
             result = await self._run_ambient_group(group_id)
             results.append({"group_id": group_id, **result})
         return {"ok": True, "action": "ambient_tick", "groups": results}
+
+    async def tick_group_attention(self) -> dict[str, Any]:
+        if not self.settings.group_attention_enabled:
+            return {"ok": True, "action": "group_attention_disabled"}
+        groups = self.state.ready_group_attention_groups()
+        results = []
+        for group_id in groups:
+            batch = self.state.pop_group_attention_batch(
+                group_id,
+                max_batch_messages=self.settings.group_attention_max_batch_messages,
+                batch_interval_seconds=self.settings.group_attention_batch_interval_seconds,
+            )
+            if not batch:
+                continue
+            try:
+                result = await self._run_group_attention_batch(group_id, batch)
+            except Exception:
+                self.state.requeue_group_attention_batch(group_id, batch)
+                raise
+            results.append({"group_id": group_id, "messages": len(batch), **result})
+        return {"ok": True, "action": "group_attention_tick", "groups": results}
 
     async def _run_ambient_group(self, group_id: str) -> dict[str, Any]:
         unread = self.state.unread_group_messages(group_id, self.settings.ambient_max_unread_messages)
@@ -203,6 +271,33 @@ class BridgeService:
 
         self.state.mark_group_replied(group_id)
         self.state.clear_unread_group_messages(group_id)
+        return {"action": "agent_handoff"}
+
+    async def _run_group_attention_batch(self, group_id: str, batch: list[dict[str, Any]]) -> dict[str, Any]:
+        if not batch:
+            return {"action": "skipped", "reason": "empty_batch"}
+        run = self.state.create_agent_run(
+            mode="active_dialogue",
+            group_id=group_id,
+            trigger_message_id=str(batch[-1].get("message_id") or ""),
+            allowed_tools=GROUP_IMMEDIATE_TOOLS,
+            allowed_repos=list(self.config.repos),
+            ttl_seconds=self.settings.agent_run_ttl_seconds,
+            max_tool_calls=20,
+        )
+        user_content = self._with_run_context(self._build_group_attention_content(group_id, batch), run)
+        session_id = self.state.hermes_session_id(f"group:{group_id}")
+        answer = await self.hermes.chat(
+            with_persona(GROUP_ATTENTION_PROMPT, self.settings.bot_persona),
+            [],
+            user_content,
+            session_id=session_id,
+        )
+        if is_skip_response(answer):
+            self.state.remove_unread_group_messages(group_id, [str(item.get("message_id")) for item in batch])
+            return {"action": "skipped", "reason": "agent_skip"}
+        self.state.remove_unread_group_messages(group_id, [str(item.get("message_id")) for item in batch])
+        self.state.mark_group_replied(group_id)
         return {"action": "agent_handoff"}
 
     def _create_run_for_inbound(self, inbound: InboundMessage, reason: str) -> dict[str, Any]:
@@ -286,6 +381,37 @@ class BridgeService:
             f"群聊消息归档 JSONL 路径：\n{archive_paths}\n\n"
             f"以下是你这次查看手机时看到的未读群聊消息。请判断是否需要参与。\n"
             f"未读消息：\n" + "\n".join(lines)
+        )
+
+    def _build_group_attention_content(self, group_id: str, batch: list[dict[str, Any]]) -> str:
+        batch_lines = []
+        for index, item in enumerate(batch, start=1):
+            sender = item.get("sender", item.get("user_id", "?"))
+            user_id = item.get("user_id", "?")
+            text = item.get("text", "")
+            ts = item.get("ts", "")
+            message_id = item.get("message_id") or f"attention:{index}"
+            batch_lines.append(f"{index}. message_id={message_id} ts={ts} sender={sender}({user_id}): {text}")
+
+        recent = self.state.recent_group_context(group_id, self.settings.max_group_context_messages)
+        stored_recent = self.store.recent_group_messages(group_id, self.settings.max_group_context_messages)
+        if stored_recent:
+            recent = stored_recent
+        recent_lines = [
+            f"- {item.get('sender_name') or item.get('sender') or item.get('user_id', '?')}: {item.get('plain_text') or item.get('text', '')}"
+            for item in recent
+            if item.get("plain_text") or item.get("text")
+        ]
+        archive = self.store.archive_paths(group_id=group_id)
+        archive_paths = "\n".join(f"- {path}" for path in archive.get("paths", [])[-7:]) or "- 暂无归档文件"
+        return (
+            f"QQ群号：{group_id}\n"
+            f"场景：active_group_attention\n"
+            f"说明：你刚刚被 @ 或被回复后，Bridge 为这个群打开了短时注意力窗口。"
+            f"下面是窗口内攒下的一小批新消息，不是随机 ambient。\n"
+            f"群聊消息归档 JSONL 路径：\n{archive_paths}\n\n"
+            f"最近群聊：\n" + "\n".join(recent_lines) + "\n\n"
+            f"本批新消息：\n" + "\n".join(batch_lines)
         )
 
     async def _send_text(self, inbound: InboundMessage, text: str, *, reply: bool) -> None:
