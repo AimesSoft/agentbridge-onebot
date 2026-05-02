@@ -501,3 +501,40 @@ def test_ambient_delay_is_random_but_clamped() -> None:
 
     assert all(300 <= delay <= 10800 for delay in delays)
     assert len({round(delay, 2) for delay in delays}) > 50
+
+
+def test_group_attention_messages_do_not_refresh_deadline(service: BridgeService, monkeypatch) -> None:
+    clock = {"now": 1_000}
+    monkeypatch.setattr("qqbridge.state.time.time", lambda: clock["now"])
+    service.state.open_group_attention(
+        group_id="333",
+        ttl_seconds=service.settings.group_attention_ttl_seconds,
+        batch_interval_seconds=10,
+        max_batches=service.settings.group_attention_max_batches,
+        reason="qq.send_message",
+    )
+    deadline = service.state.active_group_attention("333")["next_dispatch_at"]
+
+    clock["now"] = 1_005
+    service.state.queue_group_attention_message(
+        group_id="333",
+        user_id="222",
+        sender="Alice",
+        text="第一句",
+        message_id="501",
+        max_buffer_messages=service.settings.group_attention_max_buffer_messages,
+    )
+    clock["now"] = 1_009
+    service.state.queue_group_attention_message(
+        group_id="333",
+        user_id="222",
+        sender="Alice",
+        text="第二句",
+        message_id="502",
+        max_buffer_messages=service.settings.group_attention_max_buffer_messages,
+    )
+
+    assert service.state.active_group_attention("333")["next_dispatch_at"] == deadline
+    assert service.state.ready_group_attention_groups() == []
+    clock["now"] = deadline
+    assert service.state.ready_group_attention_groups() == ["333"]

@@ -200,7 +200,7 @@ class BridgeState:
         current = attentions.get(str(group_id))
         buffer = current.get("buffer", []) if isinstance(current, dict) and isinstance(current.get("buffer"), list) else []
         generation = int(current.get("generation", 0) or 0) + 1 if isinstance(current, dict) else 1
-        next_dispatch_at = now + max(0, batch_interval_seconds) if buffer else 0
+        next_dispatch_at = now + max(0, batch_interval_seconds)
         attentions[str(group_id)] = {
             "group_id": str(group_id),
             "trigger_user_id": str(trigger_user_id) if trigger_user_id else None,
@@ -224,8 +224,6 @@ class BridgeState:
         sender: str,
         text: str,
         message_id: str | None,
-        ttl_seconds: int,
-        batch_interval_seconds: int,
         max_buffer_messages: int,
     ) -> bool:
         if not group_id or not text.strip():
@@ -246,11 +244,7 @@ class BridgeState:
             attention["buffer"] = buffer
         buffer.append(message)
         attention["buffer"] = buffer[-max(1, max_buffer_messages):]
-        now = int(time.time())
-        attention["expires_at"] = now + max(1, ttl_seconds)
-        attention["batch_interval_seconds"] = max(0, batch_interval_seconds)
-        attention["next_dispatch_at"] = now + max(0, batch_interval_seconds)
-        attention["updated_at"] = now
+        attention["updated_at"] = int(time.time())
         self.data["active_group_attentions"][str(group_id)] = attention
         self.save()
         return True

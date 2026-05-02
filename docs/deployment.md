@@ -110,7 +110,7 @@ groups:
 
 `autonomous_enabled` 只控制 ambient 自主看群。私聊、@bot、回复 bot 不受这个开关影响。
 
-群级注意力窗口由 `GROUP_ATTENTION_*` 控制：有人 @bot 或回复 bot 时会立即唤醒 Hermes；只有 Hermes 真的通过 QQ skill 发出群消息后，Bridge 才会让当前群进入短暂注意力状态。窗口内普通群消息会刷新倒计时，安静一小段时间后再打包交给 Hermes 判断要不要继续回复。关闭 ambient 时，这个机制仍然可用。
+群级注意力窗口由 `GROUP_ATTENTION_*` 控制：有人 @bot 或回复 bot 时会立即唤醒 Hermes；只有 Hermes 真的通过 QQ skill 发出群消息后，Bridge 才会让当前群进入短暂注意力状态。窗口内普通群消息只会入队，不会刷新倒计时；固定窗口结束后再打包交给 Hermes 判断要不要继续回复。关闭 ambient 时，这个机制仍然可用。
 
 ## 5. 配置 NapCat
 
@@ -326,4 +326,4 @@ knowledge/
 
 ### @bot 后续追问看不到
 
-检查 `GROUP_ATTENTION_ENABLED=true`，并确认 Hermes 是通过 `qq.send_message` / `qq.reply_message` / `onebot-call send_group_msg` 发出的群消息。这个机制独立于 ambient：Agent 实际发言后会打开群级注意力窗口；后续群消息会刷新倒计时并批量送给 Hermes，而不是要求群友每句话都重新 @。
+检查 `GROUP_ATTENTION_ENABLED=true`，并确认 Hermes 是通过 `qq.send_message` / `qq.reply_message` / `onebot-call send_group_msg` 发出的群消息。这个机制独立于 ambient：Agent 实际发言后会打开群级注意力窗口；后续群消息会在固定窗口内批量送给 Hermes，而不是要求群友每句话都重新 @。

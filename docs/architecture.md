@@ -60,7 +60,8 @@ handoff 层决定何时调用 Hermes，以及如何构造上下文包。
 - @bot 或回复 bot 只负责立即唤醒 Hermes，不直接长期监听群聊。
 - 只有 Agent 真的通过 QQ skill 发出群消息后，Bridge 才会为当前群打开一个短时注意力窗口。
 - 窗口内的普通群消息不会逐条调用 Hermes，而是先进入 active group attention buffer。
-- 每条窗口内新消息都会刷新 `GROUP_ATTENTION_BATCH_INTERVAL_SECONDS` 倒计时；倒计时安静结束后，Bridge 把这一批消息交给 Hermes。
+- `GROUP_ATTENTION_BATCH_INTERVAL_SECONDS` 是固定收集窗口；普通群消息只入队，不刷新倒计时。
+- 倒计时结束后，Bridge 把这一批消息交给 Hermes。
 - 如果 Hermes 在这批消息后再次发言，skill 会自动重新打开注意力窗口。
 - 如果 Hermes 不发言但想继续等补充，可以调用 `qq.extend_group_attention` 延长观察。
 - 窗口受 `GROUP_ATTENTION_TTL_SECONDS`、`GROUP_ATTENTION_MAX_BATCHES` 和 buffer 上限约束，避免无限续命。
@@ -187,7 +188,7 @@ AgentBridge 打开群级注意力窗口
   ↓
 窗口内普通群消息
   ↓
-每条消息刷新倒计时，只入队，不逐条调用 Hermes
+只入队，不刷新倒计时，不逐条调用 Hermes
   ↓
 倒计时结束后打包新消息
   ↓

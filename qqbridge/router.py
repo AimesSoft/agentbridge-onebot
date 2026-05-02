@@ -165,8 +165,6 @@ class BridgeService:
             sender=inbound.sender_name,
             text=inbound.plain_text,
             message_id=inbound.message_id,
-            ttl_seconds=self.settings.group_attention_ttl_seconds,
-            batch_interval_seconds=self.settings.group_attention_batch_interval_seconds,
             max_buffer_messages=self.settings.group_attention_max_buffer_messages,
         )
 
